@@ -1,63 +1,27 @@
 # epics_autotune.py
-
- 
-# c6025a-08:m1s000-Drv01-TrgDS402Ena
-# c6025a-08:m1s000-Drv01-Cmd-RB
-# c6025a-08:m1s000-Drv01-Trq-RB
-# c6025a-08:m1s000-Enc01-PosAct
-# c6025a-08:m1s000-Drv01-VelAct
-# c6025a-08:m1s000-Drv01-TrqAct
-# c6025a-08:m1s000-Drv01-VolAct
-# c6025a-08:m1s000-Drv02-TmpAct
-# c6025a-08:m1s000-NxtObjId
-# c6025a-08:m1s000-PrvObjId
-# c6025a-08:m1s000-Drv01-Cmd
-# c6025a-08:m1s000-Drv01-Trq
-# c6025a-08:m1s000-Drv01-WrnAlrm
-# c6025a-08:m1s000-Drv01-ErrAlrm
-# c6025a-08:m1s000-Tp01-BI01
-# c6025a-08:m1s000-Tp01-BI02
-# c6025a-08:m1s000-Enc01-NotValid
-# c6025a-08:m1s000-Online
-# c6025a-08:m1s000-Operational
-# c6025a-08:m1s000-Alstate-Init
-# c6025a-08:m1s000-Alstate-Preop
-# c6025a-08:m1s000-Alstate-Safeop
-# c6025a-08:m1s000-Alstate-Op
-# c6025a-08:m1s000-EntryCntr
-# c6025a-08:m1s000-Stat
-# c6025a-08:m1s000-One
-# c6025a-08:m1s000-Zero
-# c6025a-08:m1s000-Drv01-Stat
-# c6025a-08:m1s000-Tp01-Stat
-# c6025a-08:m1s000-Enc01-Stat
-# c6025a-08:m1s000-Drv01-TrgDS402Ena
-# c6025a-08:m1s000-Drv01-TrgDS402Dis
-
-
 import time
 import threading
 import numpy as np
 from epics import PV
 import matplotlib.pyplot as plt
 
+
+# 31bits=8000Hz=8000*2*pi rad/s for PVs 1/42722.83
+velScale = 8000*2*np.pi/(2**31)
+
+prefix = "c6025a-08:m1s000-"
+
 # =========================
 # >>> USER PV CONFIG <<<
 # Define your PVs here
 # =========================
-
-# 31bits=8000Hz=8000*2*pi rad/s
-
-velScale = 8000*2*np.pi/(2**31)
-
-prefix = "c6025a-08:m1s000-"
 
 # Note TrqAct woks much better for fiting since in same timebase as teh other values
 PVS = {
     # Setpoint you will WRITE (switch between torque or velocity target)
     "SP": prefix + "Drv01-Trq",            # e.g. CST torque PV OR CSV velocity PV
     # Readback of setpoint (the drive's seen/latched target)
-    "SP_RBV": prefix + "Drv01-TrqAct",    # optional but recommended
+    "SP_RBV": prefix + "Drv01-TrqAct",    # optional but recommended, works better than 
     # Actual signals to MONITOR
     "VEL_ACT": prefix + "Drv01-VelAct",      # 0x606C equivalent
     "POS_ACT": prefix + "Enc01-PosAct",      # 0x6064 equivalent
