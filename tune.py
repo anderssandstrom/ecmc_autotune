@@ -5,9 +5,16 @@ import numpy as np
 from epics import PV
 import matplotlib.pyplot as plt
 
+# vel to PV scaling [rad/s] 31bits=8000Hz=8000*2*pi rad/s for PVs 1/42722.83, the "9.5367e-7" is the strange scale of the PV
+velScale = 1/(8000*2*np.pi/(2**31)/9.5367e-7)
 
-# 31bits=8000Hz=8000*2*pi rad/s for PVs 1/42722.83
-velScale = 8000*2*np.pi/(2**31)
+# Motor rated trq [Nm]
+motorRatedTrq = 0.5
+# trqSetpoint in 0.1% of rated 
+trqScale = 1000/motorRatedTrq
+
+prbsTrqOutputA = 0.005 #[Nm]
+prbsTrqTc = 0.008 #[Nm]
 
 prefix = "c6025a-08:m1s000-"
 
@@ -41,6 +48,69 @@ def align(u, y, max_lag=50):
         u = u[:lag]
         y = y[-lag:]
     return u, y, lag
+
+def compute_frf(u, y, fs, n_fft=4096, n_overlap=0.5, window='hann'):
+    """
+    H1 FRF: G(f) = S_yu / S_uu, and coherence gamma^2 = |S_yu|^2/(S_uu S_yy)
+    u: input array (CST: torque; CSV: velocity command)
+    y: output array (CST/CSV: velocity actual)
+    fs: sample rate [Hz] = 1/Ts
+    """
+    u = np.asarray(u).astype(float)
+    y = np.asarray(y).astype(float)
+    N = len(u)
+    n = min(n_fft, N)
+    hop = max(1, int(n*(1.0 - n_overlap)))
+    # window
+    if window == 'hann':
+        w = np.hanning(n)
+    else:
+        w = np.ones(n)
+    wnorm = (w**2).sum()
+
+    S_uu = 0.0
+    S_yu = 0.0
+    S_yy = 0.0
+    k = 0
+    for start in range(0, N-n+1, hop):
+        uu = (u[start:start+n] - u[start:start+n].mean()) * w
+        yy = (y[start:start+n] - y[start:start+n].mean()) * w
+        U = np.fft.rfft(uu, n=n)
+        Y = np.fft.rfft(yy, n=n)
+        S_uu += (U * np.conj(U))
+        S_yu += (Y * np.conj(U))
+        S_yy += (Y * np.conj(Y))
+        k += 1
+    if k == 0:
+        raise ValueError("Signal too short for selected n_fft.")
+    S_uu /= (k * wnorm)
+    S_yu /= (k * wnorm)
+    S_yy /= (k * wnorm)
+
+    G = S_yu / (S_uu + 1e-20)  # FRF
+    coh = (np.abs(S_yu)**2) / (S_uu*S_yy + 1e-20)
+
+    f = np.fft.rfftfreq(n, d=1.0/fs)
+    return f, G, np.clip(coh.real, 0, 1)
+
+
+def bode_plot(f, G, coh=None, title="Bode (H1 FRF)"):
+    mag = 20*np.log10(np.maximum(np.abs(G), 1e-16))
+    phase = np.unwrap(np.angle(G)) * 180/np.pi
+
+    fig, ax = plt.subplots(3 if coh is not None else 2, 1, sharex=True, figsize=(9,7))
+    ax[0].semilogx(f, mag);  ax[0].set_ylabel('Mag [dB]'); ax[0].grid(True, which='both', ls='--', alpha=0.4)
+    ax[1].semilogx(f, phase); ax[1].set_ylabel('Phase [deg]'); ax[1].grid(True, which='both', ls='--', alpha=0.4)
+    if coh is not None:
+        ax[2].semilogx(f, coh); ax[2].set_ylabel('Coherence'); ax[2].set_ylim(0,1.05); ax[2].grid(True, which='both', ls='--', alpha=0.4)
+        ax[2].set_xlabel('Frequency [Hz]')
+    else:
+        ax[1].set_xlabel('Frequency [Hz]')
+    fig.suptitle(title)
+    plt.tight_layout(rect=[0,0,1,0.95])
+    plt.show()
+
+
 
 def plot_log(log, title="Excitation Test Log"):
     """
@@ -148,9 +218,12 @@ class EthercatAutoTunerEPICS:
             ts = kw.get("timestamp", time.time())
             with self._lock:
                 if key=="VEL_ACT":
-                    value = float(value) / 9.5367e-7 * velScale
+                    value = float(value) / velScale
+                if key=="TRQ_ACT":
+                    value = float(value) / trqScale                
                 self._buf[key].append((ts, float(value)))
                 print(key + "  " + str(float(value)) )
+
         return _cb
 
     def start_monitors(self):
@@ -328,29 +401,31 @@ class EthercatAutoTunerEPICS:
 # Example usage
 # =========================
 if __name__ == "__main__":    
-    print("1")
     tuner = EthercatAutoTunerEPICS(Ts=0.001, pvs=PVS)
-    print("2")
     # --- Build excitation (pick ONE)
-    setpoints = tuner.prbs_waveform(A=10, Tc=0.008, n=10)   # ~8.2 s PRBS
+    setpoints = tuner.prbs_waveform(A=prbsTrqOutputA * trqScale, Tc=prbsTrqTc, n=10)   # ~8.2 s PRBS
     # setpoints = tuner.chirp_waveform(A=0.15, f1=1, f2=120, T=12)
     
-    for val in setpoints:
-       print(val)
-    # --- Stream via EPICS and collect monitors
-    
+    # --- Stream via EPICS and collect monitors    
     try:
       buf = tuner.run_epics_test(setpoints, flush_ms=150)
     except KeyboardInterrupt:
       tuner.cleanup()
       quit()
 
-    print("4")
     # --- Resample monitors to uniform grid
-
-
     log = tuner.build_uniform_log(buf)
     plot_log(log)
+    
+    Ts = tuner.Ts
+    fs = 1.0/Ts
+    # CST (torque→velocity): use actual torque if available, else SP_RBV/cmd
+    u = log.get("torque", log["cmd"])
+    y = log["vel"]
+
+    f, G, coh = compute_frf(u, y, fs, n_fft=4096, n_overlap=0.5)
+
+    bode_plot(f, G, coh, title='CST FRF: velocity/torque' )
 
     #tau, w, lag = align(log["cmd"], log["vel"])
     #print(f"Alignment shift: {lag} samples")
@@ -358,7 +433,11 @@ if __name__ == "__main__":
     # tempraryu rescale velocity to rad/s    
     #log["cmd"], log["vel"] = tau, w
     #plot_log(log)
-    print("5")
+
+
+
+
+
     # --- Identify (pick CST or CSV path)
     # CST path (torque setpoints in SP): use velocity actual for ID
     id_cst = tuner.identify_cst(log)
