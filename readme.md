@@ -71,7 +71,7 @@ Now we have a mechanical model of the system and can estimate control paarmeters
 ## Caluclate control params
 
 We assume:
-`tau=J*dw/dt*+B*w+tc*sign(w)`
+`tau=J*dw/dt+B*w+tc*sign(w)`
 
 Design a second order PI with target bandwindth f_bw  (100Hz) and damping ζ = 1 (criticall)
 ```
@@ -182,6 +182,7 @@ where T_i is the integral time constant (in seconds).
 Smaller T_i → faster integration (more aggressive); larger T_i → slower.
 
 #### EL72xx PVs
+CST:
 ```
 c6025a-08:m1s000-Drv01-TrgDS402Ena
 c6025a-08:m1s000-Drv01-Cmd-RB
@@ -213,6 +214,44 @@ c6025a-08:m1s000-Zero
 c6025a-08:m1s000-Drv01-Stat
 c6025a-08:m1s000-Tp01-Stat
 c6025a-08:m1s000-Enc01-Stat
+c6025a-08:m1s000-Drv01-TrgDS402Ena
+c6025a-08:m1s000-Drv01-TrgDS402Dis
+```
+CSV:
+```
+c6025a-08:m1s000-Drv01-Cmd-RB
+c6025a-08:m1s000-Drv01-Spd-RB
+c6025a-08:m1s000-Enc01-PosAct
+c6025a-08:m1s000-Drv01-VelAct
+c6025a-08:m1s000-Drv01-TrqAct
+c6025a-08:m1s000-Drv01-VolAct
+c6025a-08:m1s000-Drv01-TrqOff-RB
+c6025a-08:m1s000-NxtObjId
+c6025a-08:m1s000-PrvObjId
+c6025a-08:m1s000-Drv01-Cmd
+c6025a-08:m1s000-Drv01-Spd
+c6025a-08:m1s000-Drv01-TrqOff
+c6025a-08:m1s000-Drv01-WrnAlrm
+c6025a-08:m1s000-Drv01-ErrAlrm
+c6025a-08:m1s000-Drv01-BI01
+c6025a-08:m1s000-Drv01-BI02
+c6025a-08:m1s000-Drv01-STO01
+c6025a-08:m1s000-Tp01-BI01
+c6025a-08:m1s000-Tp01-BI02
+c6025a-08:m1s000-Online
+c6025a-08:m1s000-Operational
+c6025a-08:m1s000-Alstate-Init
+c6025a-08:m1s000-Alstate-Preop
+c6025a-08:m1s000-Alstate-Safeop
+c6025a-08:m1s000-Alstate-Op
+c6025a-08:m1s000-EntryCntr
+c6025a-08:m1s000-Stat
+c6025a-08:m1s000-One
+c6025a-08:m1s000-Zero
+c6025a-08:m1s000-Drv01-Stat
+c6025a-08:m1s000-Drv01-InfoData2
+c6025a-08:m1s000-Tp01-Stat
+c6025a-08:m1s000-Stat_
 c6025a-08:m1s000-Drv01-TrgDS402Ena
 c6025a-08:m1s000-Drv01-TrgDS402Dis
 ```
