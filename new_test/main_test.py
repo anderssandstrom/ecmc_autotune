@@ -65,7 +65,7 @@ if __name__ == "__main__":
 
     # now do bode for SP_RBV and VEL_ACT
     my_bode=analyze.bode(t, vals_by_pv["SP_RBV"], vals_by_pv["VEL_ACT"], fs, tau_ms=2.5,
-                         block_len_s=0.5, overlap=0.5, fmin=f_start, fmax=f_stop,
-                         freq_tolerance=0.02, settle_frac=0.3, r2_min=0.95)
+                         block_len_s=4.0, overlap=0.8, fmin=f_start, fmax=f_stop,
+                         freq_tolerance=0.05, settle_frac=0.3, r2_min=0.95)
     my_bode.plotBode()
  
