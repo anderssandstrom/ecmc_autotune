@@ -167,7 +167,6 @@ class EthercatAutoTunerEPICS:
             pv.prec = 4
             pv.convert = True
 
-
         # Monitor buffers
         self._buf = {
             "SP_RBV": [],   # (t, value)
