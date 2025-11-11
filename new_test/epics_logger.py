@@ -33,13 +33,6 @@ class logger:
         self._lock = threading.Lock()
         self._cids = {}  # callback IDs
 
-    def cleanup(self):
-        print("Cleanup..")
-        #sp_pv = self.pvs["SP"]
-        #if sp_pv is None:
-        #  return
-        #sp_pv.put(0, wait=False)
-
     # -----------------------------
     # Monitors
     # -----------------------------
@@ -102,6 +95,7 @@ class logger:
 
     def get_data(self):
         return self._buf
+
     def get_data(self,key):
         return self._buf[key]
 

@@ -107,12 +107,8 @@ if __name__ == "__main__":
     
     # Itersection is important (use only values frokm both (ignore old startup value for cmd))
     t, vals_by_pv, X, pv_names = mylogger.resample_to_common_time_base(fill="extrapolate", time_range ="intersection")
-    #print(pv_names)
-    #print(t[1:100]) 
-    #print(vals_by_pv["SP"])
-    #print(vals_by_pv["VEL_ACT"])
-    plot_log.plot(t,vals_by_pv)
-    
+
+    plot_log.plot(t,vals_by_pv)    
 
     # now do bode for SP_RBV and VEL_ACT
     my_bode=analyze.bode(t, vals_by_pv["SP_RBV"], vals_by_pv["VEL_ACT"], fs, tau_ms=2.5,
