@@ -65,4 +65,4 @@ if __name__ == "__main__":
                          freq_tolerance=0.05, settle_frac=0.3, r2_min=0.3)
     my_bode.plotBode()
  
-    plot_log.plot2(t,vals_by_pv["SP_RBV"], vals_by_pv["VEL_ACT"],segments=my_bode.getSegments(),fs=fs)
+    #plot_log.plot2(t,vals_by_pv["SP_RBV"], vals_by_pv["VEL_ACT"],segments=my_bode.getSegments(),fs=fs)

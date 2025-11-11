@@ -28,8 +28,7 @@ def plot(t, y_data):
     plt.show()
     return fig, axes
 
-
-def plot2(t, y1, y2, segments=None,fs=1000):
+def plot2(t, y1, y2, segments=None,fs=1000, ax=None):
     t = t.astype(float, copy=False)    
     # Safe truncate to common length
     n = min(t.size, y1.size, y2.size)
@@ -38,14 +37,20 @@ def plot2(t, y1, y2, segments=None,fs=1000):
     tt = t[:n].astype(float, copy=False)
     yy1 = y1[:n].astype(float, copy=False)
     yy2 = y2[:n].astype(float, copy=False)
-    #ax = plt.subplot(n_sig, 1 , curr_plot + 1)
-    #axes[curr_plot].plot(yy,linewidth=2)
-    plt.plot(tt, yy1,linewidth=2)
-    plt.plot(tt, yy2,linewidth=2)
+    showFig=0
+    # just plot
+    if ax is None:
+        fig, ax = plt.subplots(1,1)
+        showFig=1  # only show if ax is not passed as arg
+    ax.plot(tt, yy1,linewidth=2)
+    ax.plot(tt, yy2,linewidth=2)
 
     if segments is not None:
-        for seg in segments:
-            plt.plot([float(seg[0])/fs,float(seg[1]/fs)] ,[0,0] ,linewidth=5)
-    plt.grid(True, linestyle="--", alpha=0.4)    
-    plt.show()
+        axy2 = ax.twinx()  # instantiate a second Axes that shares the same x-axis
+        axy2.set_ylabel('Freq. [Hz]')
+        for seg in segments:            
+            axy2.plot([float(seg[0])/fs,float(seg[1]/fs)] ,[seg[2],seg[2]] ,'bx--',linewidth=2)
+    ax.grid(True, linestyle="--", alpha=0.4)
+    if showFig:
+        plt.show()
     return

@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import plot_log
 
 class bode:
     def __init__(self,t, u, y, fs, tau_ms=2.5,
@@ -279,19 +280,23 @@ class bode:
         # Quality mask
         mask = (results["R2_u"] > self.r2_min) & (results["R2_y"] > self.r2_min)
         Fm, Mm, Ph, Pc = F[mask], mag_db[mask], phase[mask], phase_c[mask]
-        # Plot
         
-        plt.subplots(2,1)
-        plt.subplot(2,1,1)
+        # Plot amplitude        
+        fig, axes = plt.subplots(3,1, constrained_layout=True)
+        fig.set_constrained_layout_pads(w_pad=0.05, h_pad=0.2, hspace=0.1, wspace=0.1)
+
+        plt.subplot(3,1,1)
+        
         plt.semilogx(Fm, Mm, marker='o')
         plt.plot([min(Fm),max(Fm)],[0,0],'k--')
         plt.grid(True, which='both')
         plt.xlabel("Frequency (Hz)")
         plt.ylabel("Magnitude (dB)")
-        plt.title("Bode Magnitude (Stepped-sine, drift-robust)")
-        plt.tight_layout()
-        #plt.figure(figsize=(9,5))
-        plt.subplot(2,1,2)
+        plt.title("Bode Magnitude (Stepped-sine)")
+        
+        
+        # Plot phase
+        plt.subplot(3,1,2)
         plt.semilogx(Fm, Ph, marker='o', label="Raw phase")
         plt.semilogx(Fm, Pc, marker='o', label=f"Phase (+{self.tau_ms:.2f} ms)")
         plt.plot([min(Fm),max(Fm)],[-180,-180],'k--')
@@ -300,7 +305,16 @@ class bode:
         plt.ylabel("Phase (deg)")
         plt.title("Bode Phase (Stepped-sine)")
         plt.legend()
-        plt.tight_layout()
+        
+    
+        # Plot raw data
+        ax=plt.subplot(3,1,3)
+        plot_log.plot2(self.t,self.u, self.y,segments=self.segments,fs=self.fs,ax=ax)
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Raw")
+        ax.set_title("Raw values")
+        ax.legend(['Command []', 'Actual []'])        
         plt.show()
+
         print(f"Estimated I/O delay from data: {results['delay_ms_est']:.2f} ms  (integer-sample)")
         print("Median R^2 (input, output):", np.median(results["R2_u"][mask]), np.median(results["R2_y"][mask]))
