@@ -177,7 +177,48 @@ class bode:
                 best = (R2, f)
         return best[1]
     
-       
+    def _periodogram_peak_freq(self,t, x, fs, fmin=0.5, fmax=500.0, oversample=8):
+        # Assume ~uniform fs; use FFT on tapered slice for speed/robustness
+        N = len(x)
+        if N < 64:
+            return np.nan
+        w = np.hanning(N)
+        X = np.fft.rfft((x - x.mean()) * w, n=int(2**np.ceil(np.log2(N))*oversample))
+        f = np.fft.rfftfreq(len(X), d=1.0/fs)
+        band = (f >= fmin) & (f <= fmax)
+        if not np.any(band):
+            return np.nan
+        P = np.abs(X)**2
+        # ignore DC bin
+        band_idx = np.where(band)[0]
+        band_idx = band_idx[band_idx > 0]
+        if band_idx.size == 0:
+            return np.nan
+        k = band_idx[np.argmax(P[band_idx])]
+        # quadratic sub-bin interpolation
+        fhat = self._quad_peak(f, P, k) if 0 < k < len(P)-1 else f[k]
+        return float(fhat)
+
+    def _taper(self,n, frac=0.05):
+        m = max(1, int(round(frac*n)))
+        w = np.ones(n, float)
+        if m > 0:
+            k = np.arange(m)
+            ramp = 0.5*(1 - np.cos(np.pi*(k+1)/m))
+            w[:m] = ramp
+            w[-m:] = ramp[::-1]
+        return w
+    
+    def _quad_peak(self,f, P, k):
+        # Quadratic interpolation around bin k (1 <= k < len(P)-1)
+        k0 = np.clip(k, 1, len(P)-2)
+        y1, y2, y3 = P[k0-1], P[k0], P[k0+1]
+        denom = (y1 - 2*y2 + y3)
+        if denom == 0:
+            return f[k0]
+        delta = 0.5*(y1 - y3)/denom
+        return f[k0] + delta*(f[k0+1]-f[k0])
+    
     def frf_from_segments_autofreq(self,
         t, u, y, fs, segments,
         settle_frac=0.20,
@@ -191,6 +232,7 @@ class bode:
     ):
         # Global integer alignment (drop, no wrap)
         tt, uu, yy = t.copy(), u.copy(), y.copy()
+        delay_samp=int(delay_samp)
         if delay_samp > 0:
             if delay_samp >= len(yy): raise ValueError("delay_samp too large")
             yy = yy[delay_samp:]; uu = uu[:-delay_samp]; tt = tt[:-delay_samp]
@@ -239,14 +281,14 @@ class bode:
                 reasons.append((i,(s0,s1,f0), f"few points ({len(ti)}<{min_meas_points})")); continue
     
             # detect the true tone from the INPUT slice
-            fhat = _periodogram_peak_freq(ti, ui, fs, f_search_min, f_search_max, oversample=oversample)
+            fhat = self._periodogram_peak_freq(ti, ui, fs, f_search_min, f_search_max, oversample=oversample)
             if not np.isfinite(fhat):
                 reasons.append((i,(s0,s1,f0), "no peak freq detected")); continue
     
             # taper (reduces leakage) then lock-in at fhat
-            w = _taper(len(ti), frac=taper_frac)
-            U, R2_ui = _lockin_phasor(ti, ui*w, fhat)
-            Y, R2_yi = _lockin_phasor(ti, yi*w, fhat)
+            w = self._taper(len(ti), frac=taper_frac)
+            U, R2_ui = self._lockin_phasor(ti, ui*w, fhat)
+            Y, R2_yi = self._lockin_phasor(ti, yi*w, fhat)
     
             # adaptive |U| floor: must be at least 1% of input std
             u_std = float(np.std(ui*w)) + 1e-12
@@ -274,47 +316,47 @@ class bode:
     
         return F, H, R2u, R2y, reasons
 
-#    def frf_from_segments(self,t, u, y, fs, segments, settle_frac=0.3, r2_min=0.95, delay_samp=0):
-#        H, F, R2u, R2y = [], [], [], []
-#        # Delay-comp y to align with u (advance y by delay_samp)
-#        if delay_samp > 0:
-#            y_al = np.concatenate([y[delay_samp:], np.zeros(delay_samp)])
-#        elif delay_samp < 0:
-#            y_al = np.concatenate([np.zeros(-delay_samp), y[:len(y)+delay_samp]])
-#        else:
-#            y_al = y.copy()
-#    
-#        for (s0, s1, f) in segments:
-#            if not np.isfinite(f) or s1 - s0 < int(5 * fs / max(f, 1e-6)):  # need a few cycles
-#                continue
-#            print('segment: ' + str(s0) +', ' + str(s1) +', ' +str(f))
-#            # settle/meas split
-#            n = s1 - s0
-#            s_settle = s0 + int(round(settle_frac * n))
-#            # measurement slice
-#            ti = t[s_settle:s1]
-#            ui = u[s_settle:s1] - np.mean(u[s_settle:s1])
-#            yi = y_al[s_settle:s1] - np.mean(y_al[s_settle:s1])
-#            if len(ti) < int(3 * fs / max(f,1e-6)):
-#                print("hepp1")
-#                continue
-#            U, r2u = self.sine_fit_complex(ti, ui, f)
-#            Y, r2y = self.sine_fit_complex(ti, yi, f)
-#            if np.abs(U) < 1e-12 or (r2u < r2_min) or (r2y < r2_min):
-#                print('U:' +str(U))
-#                print('r2u:' +str(r2u))
-#                print('r2y:' +str(r2y))
-#                print("hepp2")
-#                continue
-#            H.append(Y / U)
-#            F.append(f)
-#            R2u.append(r2u)
-#            R2y.append(r2y)
-#        print(F)
-#        print(H)
-#        print(R2u)
-#        print(R2y)
-#        return np.array(F), np.array(H), np.array(R2u), np.array(R2y)
+    def frf_from_segments(self,t, u, y, fs, segments, settle_frac=0.3, r2_min=0.95, delay_samp=0):
+        H, F, R2u, R2y = [], [], [], []
+        # Delay-comp y to align with u (advance y by delay_samp)
+        if delay_samp > 0:
+            y_al = np.concatenate([y[delay_samp:], np.zeros(delay_samp)])
+        elif delay_samp < 0:
+            y_al = np.concatenate([np.zeros(-delay_samp), y[:len(y)+delay_samp]])
+        else:
+            y_al = y.copy()
+    
+        for (s0, s1, f) in segments:
+            if not np.isfinite(f) or s1 - s0 < int(5 * fs / max(f, 1e-6)):  # need a few cycles
+                continue
+            print('segment: ' + str(s0) +', ' + str(s1) +', ' +str(f))
+            # settle/meas split
+            n = s1 - s0
+            s_settle = s0 + int(round(settle_frac * n))
+            # measurement slice
+            ti = t[s_settle:s1]
+            ui = u[s_settle:s1] - np.mean(u[s_settle:s1])
+            yi = y_al[s_settle:s1] - np.mean(y_al[s_settle:s1])
+            if len(ti) < int(3 * fs / max(f,1e-6)):
+                print("hepp1")
+                continue
+            U, r2u = self.sine_fit_complex(ti, ui, f)
+            Y, r2y = self.sine_fit_complex(ti, yi, f)
+            if np.abs(U) < 1e-12 or (r2u < r2_min) or (r2y < r2_min):
+                print('U:' +str(U))
+                print('r2u:' +str(r2u))
+                print('r2y:' +str(r2y))
+                print("hepp2")
+                continue
+            H.append(Y / U)
+            F.append(f)
+            R2u.append(r2u)
+            R2y.append(r2y)
+        print(F)
+        print(H)
+        print(R2u)
+        print(R2y)
+        return np.array(F), np.array(H), np.array(R2u), np.array(R2y)
     def check_timebase(self,t, nominal_fs=1000.0):
         dt = np.median(np.diff(t))
         fs_est = 1.0 / dt
@@ -345,6 +387,127 @@ class bode:
         if idx.size == 0: return np.nan
         k = idx[np.argmax(P[idx])]
         return float(self._quad_peak(f, P, k) if 0 < k < len(P)-1 else f[k])
+    
+    def detect_segments_by_dips(self,
+        u, 
+        fs,
+        rms_win_s=0.25,          # RMS window (s) — set near your taper length
+        thresh_frac=0.1,        # envelope threshold as fraction of envelope max
+        min_gap_s=0.50,          # merge dips closer than this (s)
+        trim_s=0.20,             # trim this many seconds off each side of every boundary
+        min_len_s=0.40,          # drop segments shorter than this
+        estimate_freq=True,      # optionally estimate freq per segment (oversampled FFT)
+        fmin=0.5, fmax=1000.0,   # freq search band for estimation
+        oversample=8
+    ):
+        """
+        Return: segments = [(s0, s1)] or [(s0, s1, fhat)] if estimate_freq=True
+        All indices are sample indices into u.
+        """
+        u = np.asarray(u, float)
+        N = len(u)
+        if N < 10:
+            return []
+    
+        # --- Envelope via moving RMS (no SciPy needed) ---
+        win = max(1, int(round(rms_win_s * fs)))
+        w = np.ones(win, float) / win
+        env = np.sqrt(np.convolve(u**2, w, mode='same'))
+    
+        # --- Threshold to find "dip" regions ---
+        thr = float(thresh_frac) * (env.max() if np.isfinite(env).any() else 0.0)
+        low = env < thr
+    
+        # --- Collapse contiguous low regions into dip centers ---
+        dips = []
+        in_region = False
+        start = 0
+        for i, flag in enumerate(low):
+            if flag and not in_region:
+                in_region = True
+                start = i
+            elif not flag and in_region:
+                in_region = False
+                stop = i
+                center = (start + stop) // 2
+                dips.append(center)
+        if in_region:
+            center = (start + N) // 2
+            dips.append(center)
+    
+        if not dips:
+            # No dips found: treat the whole record as one segment with edge trims
+            s0 = int(round(trim_s * fs))
+            s1 = int(round(N - trim_s * fs))
+            if s1 > s0 and (s1 - s0) >= int(min_len_s * fs):
+                if estimate_freq:
+                    return [(*_estimate_segment_with_freq(u, fs, s0, s1, fmin, fmax, oversample),)]
+                else:
+                    return [(s0, s1)]
+            return []
+    
+        # --- Merge dips that are very close ---
+        min_gap = int(round(min_gap_s * fs))
+        dips = np.array(sorted(dips), int)
+        merged = [dips[0]]
+        for d in dips[1:]:
+            if d - merged[-1] < min_gap:
+                merged[-1] = (merged[-1] + d) // 2  # keep the mid-point
+            else:
+                merged.append(d)
+        dips = np.array(merged, int)
+    
+        # --- Build segments between dips, applying trims ---
+        segments = []
+        trim = int(round(trim_s * fs))
+    
+        # Prepend a virtual dip at start and append at end to form outer segments
+        edges = np.concatenate([[0], dips, [N]])
+        for a, b in zip(edges[:-1], edges[1:]):
+            s0 = max(a + trim, 0)
+            s1 = min(b - trim, N)
+            if s1 - s0 >= int(min_len_s * fs):
+                segments.append((s0, s1))
+    
+        if not estimate_freq:
+            return segments
+    
+        # --- Optionally estimate frequency for each segment (oversampled FFT) ---
+        segs_with_f = []
+        for (s0, s1) in segments:
+            fhat = self._estimate_freq_fft(u[s0:s1], fs, fmin=fmin, fmax=fmax, oversample=oversample)
+            segs_with_f.append((s0, s1, fhat))
+        return segs_with_f
+
+    def _estimate_freq_fft(self,x, fs, fmin=0.5, fmax=1000.0, oversample=8):
+        """Dominant frequency via oversampled periodogram with quadratic peak interpolation."""
+        x = np.asarray(x, float)
+        N = len(x)
+        if N < 64:
+            return np.nan
+        # Hann window + oversampled rFFT
+        w = np.hanning(N)
+        nfft = int(2 ** np.ceil(np.log2(N)) * oversample)
+        X = np.fft.rfft((x - x.mean()) * w, n=nfft)
+        f = np.fft.rfftfreq(nfft, d=1.0 / fs)
+        band = (f >= fmin) & (f <= fmax)
+        if not np.any(band): return np.nan
+        P = np.abs(X) ** 2
+        idx = np.where(band)[0]
+        idx = idx[idx > 0]  # skip DC
+        if idx.size == 0: return np.nan
+        k = idx[np.argmax(P[idx])]
+        return self._quad_interp(f, P, k)
+
+    def _quad_interp(self,f, P, k):
+        """Quadratic peak interpolation around bin k."""
+        k = int(np.clip(k, 1, len(P) - 2))
+        y1, y2, y3 = P[k - 1], P[k], P[k + 1]
+        den = (y1 - 2 * y2 + y3)
+        if den == 0:
+            return float(f[k])
+        delta = 0.5 * (y1 - y3) / den
+        return float(f[k] + delta * (f[k + 1] - f[k]))
     
     def segment_by_frequency_nonoverlap(self,u, fs,
                                         fmin=1.0, fmax=200.0,
@@ -416,28 +579,24 @@ class bode:
         delay_ms = 1000.0 * delay_samp / fs
     
         # 2) Detect tone segments (drift-resistant)
-        segments = self.segment_by_frequency_nonoverlap(u, fs, block_len_s, overlap, fmin, fmax, tol_lo=0.05, tol_hi=0.02, f_split=10.0)
+        #segments = self.segment_by_frequency_nonoverlap(u, fs, fmin=fmin, fmax=fmax, block_len_s=block_len_s, overlap=overlap, tol_lo=0.05, tol_hi=0.02, f_split=10.0)
+        segments = self.detect_segments_by_dips(u, fs,fmin=fmin,fmax=fmax)
 
         print("segments (first 10):", segments[:10])
 
-
         #segments = self.merge_segments_adaptive(segments, self.fs)
+        F, H, R2u, R2y = self.frf_from_segments( t, u, y, fs, segments, settle_frac=0.2)
 
-        #print('segments:')
-        #print(segments)
-
-    
         # 3) Compute FRF per detected tone
-        F, H, R2u, R2y, reasons = self.frf_from_segments_autofreq( t, u, y, fs=self.fs,
-            segments=segments,      # or your segments
-            settle_frac=0.20,
-            min_meas_cycles=4.0,
-            min_meas_points=400,
-            r2_min=0.90,
-            delay_samp=delay_ms,     # 0 if unsure
-            f_search_min=1.0, f_search_max=200.0,
-            oversample=8, taper_frac=0.05,
-            verbose=True)
+        #F, H, R2u, R2y, reasons = self.frf_from_segments_autofreq( t, u, y, fs,segments,      # or your segments
+        #    settle_frac=0.20,
+        #    min_meas_cycles=4.0,
+        #    min_meas_points=400,
+        #    r2_min=0.90,
+        #    delay_samp=delay_ms,     # 0 if unsure
+        #    f_search_min=1.0, f_search_max=200.0,
+        #    oversample=8, taper_frac=0.05,
+        #    verbose=True)
         
         # 4) Phase delay compensation (your known τ plus the estimated discrete delay)
         tau = max(0.0, tau_ms) * 1e-3
@@ -549,3 +708,14 @@ class bode:
         plt.show()
         print(f"Estimated I/O delay from data: {results['delay_ms_est']:.2f} ms  (integer-sample)")
         print("Median R^2 (input, output):", np.median(results["R2_u"][mask]), np.median(results["R2_y"][mask]))
+
+
+
+# 0..33000
+#36000..63000
+#67000..93000
+#95000..116000
+#119000..138000
+#141000..158000
+#160000..174000
+#177000..190000

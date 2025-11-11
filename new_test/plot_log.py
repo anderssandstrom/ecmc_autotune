@@ -19,7 +19,9 @@ def plot(t, y_data):
         yy = y[:n].astype(float, copy=False)
 
         #ax = plt.subplot(n_sig, 1 , curr_plot + 1)
-        axes[curr_plot].plot(tt, yy,linewidth=2)        
+        #axes[curr_plot].plot(yy,linewidth=2)
+        axes[curr_plot].plot(tt, yy,linewidth=2)      
+
         axes[curr_plot].grid(True, linestyle="--", alpha=0.4)
         axes[curr_plot].set_title(key)
         curr_plot += 1
