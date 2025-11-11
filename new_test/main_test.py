@@ -62,9 +62,11 @@ if __name__ == "__main__":
     #print(vals_by_pv["VEL_ACT"])
     plot_log.plot(t,vals_by_pv)
     
+    
     # now do bode for SP_RBV and VEL_ACT
     my_bode=analyze.bode(t, vals_by_pv["SP_RBV"], vals_by_pv["VEL_ACT"], fs, tau_ms=2.5,
                          block_len_s=1.5, overlap=0.8, fmin=f_start, fmax=f_stop,
-                         freq_tolerance=0.05, settle_frac=0.3, r2_min=0.95)
+                         freq_tolerance=0.05, settle_frac=0.3, r2_min=0.3)
     my_bode.plotBode()
  
+    plot_log.plot2(t,vals_by_pv["SP_RBV"], vals_by_pv["VEL_ACT"],segments=my_bode.getSegments(),fs=fs)

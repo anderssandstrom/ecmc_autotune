@@ -43,16 +43,21 @@ class logger:
     # -----------------------------
     # Monitors
     # -----------------------------
-    def _cb_factory(self, key):
+    def _cb_factory(self, key):        
         def _cb(pvname=None, value=None, **kw):
             ts = kw.get("timestamp", time.time())
+            if self.fistDataPoint:
+               self.time_offset=ts
+            self.fistDataPoint=0
+            #print(ts-self.time_offset)
             with self._lock:
-                self._buf[key].append((ts, float(value)))
+                self._buf[key].append((ts-self.time_offset, float(value)))
                 #print(key + "  " + str(float(value)) )
         return _cb
 
     def start_monitors(self):
         # Create monitors for SP_RBV (if defined) and actuals
+        self.fistDataPoint=1        
         for key in self.pvs: #["SP_RBV", "VEL_ACT", "POS_ACT", "TRQ_ACT"]:
             pv = self.pvs.get(key)
             if pv is not None and pv.pvname:

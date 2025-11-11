@@ -6,7 +6,7 @@ def plot(t, y_data):
     height_per_plot = 2.2
     n_sig = len(y_data)
     fig_h = max(1.8, height_per_plot * n_sig)
-    fig, axes = plt.subplots(n_sig, 1, sharex=True, figsize=(8, fig_h))    
+    fig, axes = plt.subplots(n_sig, 1, sharex=True, figsize=(8, fig_h))
     curr_plot = 0
     for key, y in y_data.items():
         print(y)
@@ -27,3 +27,25 @@ def plot(t, y_data):
         curr_plot += 1
     plt.show()
     return fig, axes
+
+
+def plot2(t, y1, y2, segments=None,fs=1000):
+    t = t.astype(float, copy=False)    
+    # Safe truncate to common length
+    n = min(t.size, y1.size, y2.size)
+    if y1.size != t.size:
+        print("length differs (t={t.size}, y={y.size}); truncated to {n}.")
+    tt = t[:n].astype(float, copy=False)
+    yy1 = y1[:n].astype(float, copy=False)
+    yy2 = y2[:n].astype(float, copy=False)
+    #ax = plt.subplot(n_sig, 1 , curr_plot + 1)
+    #axes[curr_plot].plot(yy,linewidth=2)
+    plt.plot(tt, yy1,linewidth=2)
+    plt.plot(tt, yy2,linewidth=2)
+
+    if segments is not None:
+        for seg in segments:
+            plt.plot([float(seg[0])/fs,float(seg[1]/fs)] ,[0,0] ,linewidth=5)
+    plt.grid(True, linestyle="--", alpha=0.4)    
+    plt.show()
+    return

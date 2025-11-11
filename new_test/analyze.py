@@ -568,6 +568,10 @@ class bode:
     
         return segs2
 
+
+    def getSegments(self):
+        return self.segments
+
     # ========================
     # Run the robust pipeline
     # ========================
@@ -580,13 +584,12 @@ class bode:
     
         # 2) Detect tone segments (drift-resistant)
         #segments = self.segment_by_frequency_nonoverlap(u, fs, fmin=fmin, fmax=fmax, block_len_s=block_len_s, overlap=overlap, tol_lo=0.05, tol_hi=0.02, f_split=10.0)
-        segments = self.detect_segments_by_dips(u, fs,fmin=fmin,fmax=fmax)
+        self.segments = self.detect_segments_by_dips(u, fs,fmin=fmin,fmax=fmax)
 
-        print("segments (first 10):", segments[:10])
+        print("segments (first 10):", self.segments[:10])
 
         #segments = self.merge_segments_adaptive(segments, self.fs)
-        F, H, R2u, R2y = self.frf_from_segments( t, u, y, fs, segments, settle_frac=0.2)
-
+        F, H, R2u, R2y = self.frf_from_segments( t, u, y, fs, self.segments, settle_frac=0.2,r2_min=r2_min)
         # 3) Compute FRF per detected tone
         #F, H, R2u, R2y, reasons = self.frf_from_segments_autofreq( t, u, y, fs,segments,      # or your segments
         #    settle_frac=0.20,
@@ -607,15 +610,15 @@ class bode:
         phase_deg = np.degrees(np.unwrap(np.angle(H)))
         phase_c_deg = np.degrees(np.unwrap(np.angle(Hc)))
     
-        results = {
+        self.results = {
             "F": F, "H": H, "mag_db": mag_db,
             "phase_deg": phase_deg, "phase_comp_deg": phase_c_deg,
             "delay_samples": delay_samp, "delay_ms_est": delay_ms,
-            "R2_u": R2u, "R2_y": R2y, "segments": segments
+            "R2_u": R2u, "R2_y": R2y, "segments": self.segments
         }
-        self.results = results
+        
 
-        return results
+        return self.results
 
     def same_freq(self,fa, fb):
         tol = 0.05 if min(fa, fb) < 10.0 else 0.02
@@ -689,16 +692,22 @@ class bode:
         mask = (results["R2_u"] > self.r2_min) & (results["R2_y"] > self.r2_min)
         Fm, Mm, Ph, Pc = F[mask], mag_db[mask], phase[mask], phase_c[mask]
         # Plot
+
         plt.figure(figsize=(9,5))
+        plt.subplots(2,1)
+        plt.subplot(2,1,1)
         plt.semilogx(Fm, Mm, marker='o')
+        plt.plot([min(Fm),max(Fm)],[0,0],'k--')
         plt.grid(True, which='both')
         plt.xlabel("Frequency (Hz)")
         plt.ylabel("Magnitude (dB)")
         plt.title("Bode Magnitude (Stepped-sine, drift-robust)")
         plt.tight_layout()
-        plt.figure(figsize=(9,5))
+        #plt.figure(figsize=(9,5))
+        plt.subplot(2,1,2)
         plt.semilogx(Fm, Ph, marker='o', label="Raw phase")
         plt.semilogx(Fm, Pc, marker='o', label=f"Phase (+{self.tau_ms:.2f} ms)")
+        plt.plot([min(Fm),max(Fm)],[-180,-180],'k--')
         plt.grid(True, which='both')
         plt.xlabel("Frequency (Hz)")
         plt.ylabel("Phase (deg)")
@@ -708,7 +717,6 @@ class bode:
         plt.show()
         print(f"Estimated I/O delay from data: {results['delay_ms_est']:.2f} ms  (integer-sample)")
         print("Median R^2 (input, output):", np.median(results["R2_u"][mask]), np.median(results["R2_y"][mask]))
-
 
 
 # 0..33000

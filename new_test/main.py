@@ -52,27 +52,55 @@ if __name__ == "__main__":
     #taper = 0.05            # fraction of cosine fade-in/out per step
 
 
-    t, u, freqs = excite.generate(fs,f_start, f_stop,n_points, amp, n_settle, n_meas, taper)
+
+    t, u, freqs, f_array, meas_mask, settle_mask = excite.generate(fs,f_start, f_stop,n_points, amp, n_settle, n_meas)
 
     #- Start logger
     mylogger = logger.logger(Ts=1/fs, pvs=PVS)
+    
+    sp_pv = PV(PVS["SP"])
+    if sp_pv is None:
+        raise RuntimeError("SP PV not configured.")
+    
+    # Fix timestamp of first value (so logger gets a fresh timestamp)
+    try:
+        value = sp_pv.get(timeout=2.0)
+        if value is None:
+            raise TimeoutError("PV read timed out")
+        sp_pv.put(value,wait=True)        
+    except Exception as e:
+        print("Error:", e)
+        quit()
+
     mylogger.start_monitors()
     
     sent_t = np.zeros(len(u))
     sent_u = np.zeros(len(u))
 
-    sp_pv = PV(PVS["SP"])
-    if sp_pv is None:
-        raise RuntimeError("SP PV not configured.")
-    
     # Send commands
     t0 = time.monotonic()
-    for k, u in enumerate(u):
+    t = time.monotonic()
+    count = 1000
+    countcount = 1
+
+    for k, u in enumerate(u):        
         sp_pv.put(float(u), wait=False)
         sent_t[k] = time.monotonic() - t0
         sent_u[k] = u
         # pacing: best-effort; your IOC timing may dominate anyway
-        time.sleep(1/fs)
+        # Compensate sleep time with error from last loop
+        sleepTime=2/fs-(time.monotonic()-t)
+        if sleepTime<0:
+            sleepTime =1/fs
+        t = time.monotonic()
+        time.sleep(sleepTime)
+        count-=1
+        if count==0:
+            print("kilo values sent: " + str(countcount))
+            countcount+=1
+            count=1000
+
+    print("Total time for sequence: " + str(time.monotonic()-t0))
     time.sleep(1) # finalize 
     mylogger.stop_monitors()
     mylogger.save_log("data")
@@ -89,6 +117,6 @@ if __name__ == "__main__":
     # now do bode for SP_RBV and VEL_ACT
     my_bode=analyze.bode(t, vals_by_pv["SP_RBV"], vals_by_pv["VEL_ACT"], fs, tau_ms=2.5,
                          block_len_s=0.5, overlap=0.5, fmin=f_start, fmax=f_stop,
-                         freq_tolerance=0.02, settle_frac=0.3, r2_min=0.95)
+                         freq_tolerance=0.02, settle_frac=0.3, r2_min=0.3)
     my_bode.plotBode()
  
