@@ -101,6 +101,10 @@ class AutotuneWindow(QtWidgets.QWidget):
         self.reanalyze_btn.clicked.connect(self._start_reanalysis)
         button_row.addWidget(self.measure_btn)
         button_row.addWidget(self.reanalyze_btn)
+        self.abort_btn = QtWidgets.QPushButton("Abort")
+        self.abort_btn.setEnabled(False)
+        self.abort_btn.clicked.connect(self._abort_worker)
+        button_row.addWidget(self.abort_btn)
         button_row.addStretch(1)
         layout.addLayout(button_row)
 
@@ -339,6 +343,7 @@ class AutotuneWindow(QtWidgets.QWidget):
         self.progress_bar.setValue(0)
         self.measure_btn.setEnabled(False)
         self.reanalyze_btn.setEnabled(False)
+        self.abort_btn.setEnabled(True)
         self.worker_thread = QtCore.QThread(self)
         self.worker = Worker(mode, kwargs)
         self.worker.moveToThread(self.worker_thread)
@@ -353,12 +358,17 @@ class AutotuneWindow(QtWidgets.QWidget):
 
     def _cleanup_worker(self):
         if self.worker_thread:
+            try:
+                self.worker_thread.requestInterruption()
+            except Exception:
+                pass
             self.worker_thread.quit()
             self.worker_thread.wait()
             self.worker_thread = None
             self.worker = None
             self.measure_btn.setEnabled(True)
             self.reanalyze_btn.setEnabled(True)
+            self.abort_btn.setEnabled(False)
 
     def _on_worker_finished(self, result):
         self.append_log("Worker finished")
@@ -366,11 +376,19 @@ class AutotuneWindow(QtWidgets.QWidget):
         self._update_plots(result)
         self._report_result(result)
         self.progress_bar.setValue(100)
+        self.abort_btn.setEnabled(False)
 
     def _on_worker_failed(self, trace):
         self.append_log(trace)
         QtWidgets.QMessageBox.critical(self, "Worker failed", trace)
         self.progress_bar.setValue(0)
+        self.abort_btn.setEnabled(False)
+
+    def _abort_worker(self):
+        if self.worker and self.worker_thread:
+            self.append_log("Abort requested by user")
+            self.worker_thread.requestInterruption()
+            QtWidgets.QMessageBox.information(self, "Abort", "Stop requested. Allow current PV puts to finish.")
 
     def _update_progress(self, value):
         self.progress_bar.setValue(int(max(0.0, min(1.0, value)) * 100))
@@ -479,6 +497,27 @@ class AutotuneWindow(QtWidgets.QWidget):
         fig.tight_layout()
         fig.show()
 
+    def _show_time_popup(self):
+        if not self.last_time_data:
+            QtWidgets.QMessageBox.information(self, "No data", "Run a measurement/reanalysis first.")
+            return
+        t, cmd, resp, cmd_label, resp_label = self.last_time_data
+        if t is None or ((cmd is None) and (resp is None)):
+            QtWidgets.QMessageBox.information(self, "No data", "No signals available to plot.")
+            return
+        fig, ax = plt.subplots(1, 1, figsize=(9, 4))
+        if cmd is not None:
+            ax.plot(t[: len(cmd)], cmd, label=cmd_label)
+        if resp is not None:
+            ax.plot(t[: len(resp)], resp, label=resp_label)
+        ax.set_xlabel("Time [s]")
+        ax.set_ylabel("Signal")
+        ax.grid(True, linestyle="--", alpha=0.4)
+        ax.legend()
+        ax.set_title("Command vs Response")
+        fig.tight_layout()
+        fig.show()
+
     def _confirm_excitation(self, ex_cfg):
         try:
             t, u, _, f_array, _, _ = excite_sine.generate(
@@ -530,27 +569,6 @@ class ExcitationPreviewDialog(QtWidgets.QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
-
-    def _show_time_popup(self):
-        if not self.last_time_data:
-            QtWidgets.QMessageBox.information(self, "No data", "Run a measurement/reanalysis first.")
-            return
-        t, cmd, resp, cmd_label, resp_label = self.last_time_data
-        if t is None or ((cmd is None) and (resp is None)):
-            QtWidgets.QMessageBox.information(self, "No data", "No signals available to plot.")
-            return
-        fig, ax = plt.subplots(1, 1, figsize=(9, 4))
-        if cmd is not None:
-            ax.plot(t[: len(cmd)], cmd, label=cmd_label)
-        if resp is not None:
-            ax.plot(t[: len(resp)], resp, label=resp_label)
-        ax.set_xlabel("Time [s]")
-        ax.set_ylabel("Signal")
-        ax.grid(True, linestyle="--", alpha=0.4)
-        ax.legend()
-        ax.set_title("Command vs Response")
-        fig.tight_layout()
-        fig.show()
 
 
 def main():
