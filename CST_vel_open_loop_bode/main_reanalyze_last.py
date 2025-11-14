@@ -12,9 +12,9 @@ import analyze
 PREFIX = "c6025a-08:m1s000-"
 PVS = {
     # Setpoint you will WRITE (switch between torque or velocity target)
-    "SP": PREFIX + "Drv01-Spd",              # e.g. CST torque PV OR CSV velocity PV
+    "SP": PREFIX + "Drv01-Trq",              # e.g. CST torque PV OR CSV velocity PV
     # Readback of setpoint (the drive's seen/latched target)
-    "SP_RBV": PREFIX + "Drv01-Spd-RB",       # optional but recommended, works better than 
+    "SP_RBV": PREFIX + "Drv01-TrqAct",       # optional but recommended, works better than 
     # Actual signals to MONITOR
     "VEL_ACT": PREFIX + "Drv01-VelAct",      # 0x606C equivalent
     "POS_ACT": PREFIX + "Enc01-PosAct",      # 0x6064 equivalent
@@ -35,21 +35,12 @@ if __name__ == "__main__":
     
     #-  Generate setpoint signal
     fs = 1000.0             # Sampling frequency [Hz]
-    f_start, f_stop = 1, 100
+    f_start, f_stop = 10, 200
     n_points = 40           # Number of frequencies (log spaced)
-    amp = 30.0              # Command amplitude (+/-)
+    amp = 0.01              # Command amplitude (+/-)
     n_settle = 10           # Settle cycles before measuring
     n_meas = 20             # Measured cycles per frequency
     taper = 0.05            # fraction of cosine fade-in/out per step
-
-
-    #fs = 1000.0             # Sampling frequency [Hz]
-    #f_start, f_stop = 1, 50
-    #n_points = 10           # Number of frequencies (log spaced)
-    #amp = 10.0              # Command amplitude (+/-)
-    #n_settle = 5           # Settle cycles before measuring
-    #n_meas = 5              # Measured cycles per frequency
-    #taper = 0.05            # fraction of cosine fade-in/out per step
 
     mylogger = logger.logger(Ts=1/fs, pvs=PVS)
     mylogger.load_log("data.pkl")
@@ -62,7 +53,7 @@ if __name__ == "__main__":
     # now do bode for SP_RBV and VEL_ACT
     my_bode=analyze.bode(t, vals_by_pv["SP_RBV"], vals_by_pv["VEL_ACT"], fs, tau_ms=2.5,
                          block_len_s=1.5, overlap=0.8, fmin=f_start, fmax=f_stop,
-                         freq_tolerance=0.05, settle_frac=0.3, r2_min=0.3)
+                         freq_tolerance=0.05, settle_frac=0.3, r2_min=0.005)
     my_bode.plotBode()
  
     #plot_log.plot2(t,vals_by_pv["SP_RBV"], vals_by_pv["VEL_ACT"],segments=my_bode.getSegments(),fs=fs)

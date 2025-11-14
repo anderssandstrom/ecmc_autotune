@@ -237,7 +237,7 @@ class bode:
         delay_ms = 1000.0 * delay_samp / fs
     
         # 2) Detect tone segments (drift-resistant)
-        self.segments = self.detect_segments_by_dips(u, fs,fmin=fmin,fmax=fmax)
+        self.segments = self.detect_segments_by_dips(u, fs,fmin=fmin,fmax=fmax,trim_s=0.5)
 
         print("segments (first 10):", self.segments[:10])
         F, H, R2u, R2y = self.frf_from_segments( t, u, y, fs, self.segments, settle_frac=0.2,r2_min=r2_min)

@@ -14,7 +14,7 @@ PVS = {
     # Setpoint you will WRITE (switch between torque or velocity target)
     "SP": PREFIX + "Drv01-Trq",              # e.g. CST torque PV OR CSV velocity PV
     # Readback of setpoint (the drive's seen/latched target)
-    "SP_RBV": PREFIX + "Drv01-Trq-Act",       # optional but recommended, works better than 
+    "SP_RBV": PREFIX + "Drv01-TrqAct",       # optional but recommended, works better than 
     # Actual signals to MONITOR
     "VEL_ACT": PREFIX + "Drv01-VelAct",      # 0x606C equivalent
     "POS_ACT": PREFIX + "Enc01-PosAct",      # 0x6064 equivalent
@@ -35,11 +35,11 @@ if __name__ == "__main__":
     
     #-  Generate setpoint signal
     fs = 1000.0             # Sampling frequency [Hz]
-    f_start, f_stop = 10, 200
-    n_points = 40           # Number of frequencies (log spaced)
-    amp = 10.0              # Command amplitude (+/-)
+    f_start, f_stop = 10, 400
+    n_points = 20           # Number of frequencies (log spaced)
+    amp = 0.01              # Command amplitude (+/-)
     n_settle = 10           # Settle cycles before measuring
-    n_meas = 20             # Measured cycles per frequency
+    n_meas = 50             # Measured cycles per frequency
     taper = 0.05            # fraction of cosine fade-in/out per step
 
     t, u, freqs, f_array, meas_mask, settle_mask = excite.generate(fs,f_start, f_stop,n_points, amp, n_settle, n_meas)
@@ -100,8 +100,9 @@ if __name__ == "__main__":
     plot_log.plot(t,vals_by_pv)    
 
     # now do bode for SP_RBV and VEL_ACT
+    # r2_min controls which segemnst are used.. needs lowering if too few segments
     my_bode=analyze.bode(t, vals_by_pv["SP_RBV"], vals_by_pv["VEL_ACT"], fs, tau_ms=2.5,
                          block_len_s=0.5, overlap=0.5, fmin=f_start, fmax=f_stop,
-                         freq_tolerance=0.02, settle_frac=0.3, r2_min=0.3)
+                         freq_tolerance=0.02, settle_frac=0.3, r2_min=0.05)
     my_bode.plotBode()
  
