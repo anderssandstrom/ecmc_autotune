@@ -19,16 +19,14 @@ class PVSettings(object):
         prefix="c6025a-08:m1s000-",
         sp="Drv01-Trq",
         sp_rbv="Drv01-TrqAct",
-        vel_act="Drv01-VelAct",
-        pos_act="Enc01-PosAct",
-        trq_act="Drv01-TrqAct",
+        act="Drv01-VelAct",
+        extra_logs=None,
     ):
         self.prefix = prefix
         self.sp = sp
         self.sp_rbv = sp_rbv
-        self.vel_act = vel_act
-        self.pos_act = pos_act
-        self.trq_act = trq_act
+        self.act = act
+        self.extra_logs = extra_logs or {}
 
     def _normalize(self, value):
         value = (value or "").strip()
@@ -43,13 +41,17 @@ class PVSettings(object):
         for key, attr in (
             ("SP", "sp"),
             ("SP_RBV", "sp_rbv"),
-            ("VEL_ACT", "vel_act"),
-            ("POS_ACT", "pos_act"),
-            ("TRQ_ACT", "trq_act"),
+            ("ACT", "act"),
         ):
             pv_name = self._normalize(getattr(self, attr, ""))
             if pv_name:
                 mapping[key] = pv_name
+        for key, value in self.extra_logs.items():
+            norm = self._normalize(value)
+            key = (key or "").strip()
+            if not norm or not key or key in mapping:
+                continue
+            mapping[key] = norm
         return mapping
 
 
@@ -160,11 +162,17 @@ def run_measurement(
     log_filename=None,
     log_fn=None,
     progress_fn=None,
+    should_abort=None,
 ):
     pvs = pv.to_pv_map()
     if "SP" not in pvs:
         raise ValueError("SP PV must be defined")
+    if "ACT" not in pvs:
+        raise ValueError("ACT PV must be defined for analysis")
     _log(log_fn, "Using PV map: %s" % ", ".join(f"{k}={v}" for k, v in sorted(pvs.items())))
+
+    if should_abort and should_abort():
+        raise RuntimeError("Measurement aborted before start.")
 
     _log(log_fn, "Generating stepped-sine command sequence…")
     seq = excite_sine.generate(
@@ -185,6 +193,7 @@ def run_measurement(
     _log(log_fn, f"Command length: {duration:.1f} s ({len(command)} samples)")
 
     mylogger = epics_logger.logger(Ts=1.0 / float(excitation.fs), pvs=pvs)
+    _verify_pv_connections(mylogger, log_fn)
     sp_pv = mylogger.pvs.get("SP")
     _log(log_fn, str(sp_pv))
     
@@ -201,19 +210,34 @@ def run_measurement(
     dt = 1.0 / float(excitation.fs)
     total = len(command)
     t_next = time.monotonic()
-    for idx, value in enumerate(command):
-        sp_pv.put(float(value), wait=False)
-        t_next += dt
+    aborted = False
+    try:
+        for idx, value in enumerate(command):
+            if should_abort and should_abort():
+                aborted = True
+                _log(log_fn, "Abort requested; stopping command stream...")
+                break
+            sp_pv.put(float(value), wait=False)
+            t_next += dt
+            if progress_fn:
+                progress_fn(idx / total)
+            delay = t_next - time.monotonic()
+            if delay > 0:
+                time.sleep(delay)
+        if not aborted:
+            time.sleep(1.0)
+    finally:
+        _log(log_fn, "Excitation finished, stopping monitors…")
+        mylogger.stop_monitors()
         if progress_fn:
-            progress_fn(idx / total)
-        delay = t_next - time.monotonic()
-        if delay > 0:
-            time.sleep(delay)
-    time.sleep(1.0)
-    _log(log_fn, "Excitation finished, stopping monitors…")
-    mylogger.stop_monitors()
-    if progress_fn:
-        progress_fn(1.0)
+            progress_fn(1.0)
+        try:
+            sp_pv.put(float(init_val), wait=False)
+            _log(log_fn, "Restored SP to initial value.")
+        except Exception as exc:
+            _log(log_fn, f"Warning: failed to restore SP PV: {exc}")
+    if aborted:
+        raise RuntimeError("Measurement aborted by user.")
 
     log_path = None
     if log_filename:
@@ -273,9 +297,13 @@ def _analyze(
     log_path,
 ):
     cmd_key = "SP_RBV" if "SP_RBV" in vals_by_pv else ("SP" if "SP" in vals_by_pv else None)
-    resp_key = "VEL_ACT" if "VEL_ACT" in vals_by_pv else None
+    resp_key = None
+    for candidate in ("ACT", "VEL_ACT", "POS_ACT", "TRQ_ACT"):
+        if candidate in vals_by_pv:
+            resp_key = candidate
+            break
     if cmd_key is None or resp_key is None:
-        raise RuntimeError("Both command (SP / SP_RBV) and response (VEL_ACT) signals are required")
+        raise RuntimeError("Both command (SP / SP_RBV) and response (ACT) signals are required")
 
     bode_obj = analyze.bode(
         t,
@@ -365,3 +393,20 @@ def _infer_sample_rate(t):
 def _log(log_fn, message):
     if log_fn:
         log_fn(message)
+
+
+def _verify_pv_connections(mylogger, log_fn, timeout=2.0):
+    missing = []
+    for name, pv in mylogger.pvs.items():
+        if pv is None:
+            missing.append(name)
+            continue
+        try:
+            ok = pv.wait_for_connection(timeout=timeout)
+        except Exception:
+            ok = False
+        if not ok:
+            missing.append(name)
+    if missing:
+        raise RuntimeError("Failed to connect to PVs: %s" % ", ".join(sorted(missing)))
+    _log(log_fn, "PV connectivity check passed.")

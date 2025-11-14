@@ -27,7 +27,7 @@ class logger:
           if pv is not None:
             pv.prec = 4
             pv.convert = True
-        for name in PVS:
+        for name in self.pvs.keys():
             self._buf[name] = [] # (t, value)
 
         self._lock = threading.Lock()
@@ -293,4 +293,3 @@ if __name__ == "__main__":
 
     t, u, freqs = generate(fs,f_start, f_stop, n_points, amp, n_settle, n_meas, taper)
     
-

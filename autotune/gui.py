@@ -4,7 +4,7 @@ import traceback
 from datetime import datetime
 
 import numpy as np
-from PyQt5 import QtCore, QtWidgets
+from PyQt5 import QtCore, QtGui, QtWidgets
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
@@ -14,6 +14,15 @@ try:
 except ImportError:  # pragma: no cover
     import pipeline  # type: ignore
     import excite_sine  # type: ignore
+
+
+PV_SUGGESTIONS = [
+    "Enc01-PosAct",
+    "Drv01-VelAct",
+    "Drv01-TrqAct",
+    "Drv01-Spd",
+    "Drv01-Spd-RB",
+]
 
 
 class Worker(QtCore.QObject):
@@ -26,20 +35,37 @@ class Worker(QtCore.QObject):
         super().__init__()
         self.mode = mode
         self.kwargs = kwargs
+        self._abort = False
 
     @QtCore.pyqtSlot()
     def run(self):
         try:
             if self.mode == "measure":
-                result = pipeline.run_measurement(progress_fn=self.progress.emit, log_fn=self.log.emit, **self.kwargs)
+                result = pipeline.run_measurement(
+                    progress_fn=self.progress.emit,
+                    log_fn=self.log.emit,
+                    should_abort=self.should_abort,
+                    **self.kwargs,
+                )
             elif self.mode == "reanalyze":
                 result = pipeline.reanalyze_log(log_fn=self.log.emit, **self.kwargs)
             else:
                 raise ValueError(f"Unsupported worker mode {self.mode}")
-        except Exception:
-            self.failed.emit(traceback.format_exc())
+        except Exception as exc:
+            message = str(exc)
+            if isinstance(exc, RuntimeError) and "aborted" in message.lower():
+                self.failed.emit(message)
+            else:
+                self.failed.emit(traceback.format_exc())
         else:
             self.finished.emit(result)
+
+    def request_abort(self):
+        self._abort = True
+
+    def should_abort(self):
+        thread = QtCore.QThread.currentThread()
+        return self._abort or (thread.isInterruptionRequested() if thread else False)
 
 
 class PlotCanvas(FigureCanvasQTAgg):
@@ -53,6 +79,69 @@ class PlotCanvas(FigureCanvasQTAgg):
             for ax in row:
                 ax.cla()
         self.draw_idle()
+
+
+class PVLineEdit(QtWidgets.QLineEdit):
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasText():
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dropEvent(self, event):
+        if event.mimeData().hasText():
+            self.setText(event.mimeData().text().strip())
+            event.acceptProposedAction()
+        else:
+            super().dropEvent(event)
+
+
+class PVPlainTextEdit(QtWidgets.QPlainTextEdit):
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasText():
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dropEvent(self, event):
+        if event.mimeData().hasText():
+            addition = event.mimeData().text().strip()
+            if addition:
+                text = self.toPlainText().strip()
+                if text:
+                    text += "\n" + addition
+                else:
+                    text = addition
+                self.setPlainText(text)
+            event.acceptProposedAction()
+        else:
+            super().dropEvent(event)
+
+
+class PVSuggestionList(QtWidgets.QListWidget):
+    def __init__(self, items, parent=None):
+        super().__init__(parent)
+        self.addItems(items)
+        self.setDragEnabled(True)
+        self.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+
+    def startDrag(self, supported_actions):
+        item = self.currentItem()
+        if item is None:
+            return
+        drag = QtGui.QDrag(self)
+        mime = QtCore.QMimeData()
+        mime.setText(item.text())
+        drag.setMimeData(mime)
+        drag.exec_(QtCore.Qt.CopyAction)
 
 
 class AutotuneWindow(QtWidgets.QWidget):
@@ -141,19 +230,31 @@ class AutotuneWindow(QtWidgets.QWidget):
 
     def _build_pv_tab(self):
         widget = QtWidgets.QWidget()
-        form = QtWidgets.QFormLayout(widget)
+        layout = QtWidgets.QHBoxLayout(widget)
+        form_container = QtWidgets.QWidget()
+        form = QtWidgets.QFormLayout(form_container)
         self.pv_prefix = self._line_edit("c6025a-08:m1s000-")
         self.pv_sp = self._line_edit("Drv01-Trq")
         self.pv_sp_rbv = self._line_edit("Drv01-TrqAct")
-        self.pv_vel = self._line_edit("Drv01-VelAct")
-        self.pv_pos = self._line_edit("Enc01-PosAct")
-        self.pv_trq = self._line_edit("Drv01-TrqAct")
+        self.pv_act = self._line_edit("Drv01-VelAct")
+        self.pv_extra = PVPlainTextEdit("")
+        self.pv_extra.setPlaceholderText("One PV per line (optional NAME=PV). Empty line removes logging.")
         form.addRow("Prefix", self.pv_prefix)
         form.addRow("SP", self.pv_sp)
         form.addRow("SP_RBV", self.pv_sp_rbv)
-        form.addRow("VEL_ACT", self.pv_vel)
-        form.addRow("POS_ACT", self.pv_pos)
-        form.addRow("TRQ_ACT", self.pv_trq)
+        form.addRow("ACT PV", self.pv_act)
+        form.addRow("Extra log PVs", self.pv_extra)
+        layout.addWidget(form_container, 2)
+
+        suggestion_box = QtWidgets.QGroupBox("Available PVs")
+        suggestion_layout = QtWidgets.QVBoxLayout(suggestion_box)
+        hint = QtWidgets.QLabel("Double-click to insert into focused field or drag text.")
+        hint.setWordWrap(True)
+        suggestion_layout.addWidget(hint)
+        self.pv_list = PVSuggestionList(PV_SUGGESTIONS)
+        self.pv_list.itemDoubleClicked.connect(lambda item: self._insert_pv_text(item.text()))
+        suggestion_layout.addWidget(self.pv_list)
+        layout.addWidget(suggestion_box, 1)
         return widget
 
     def _build_excitation_tab(self):
@@ -228,7 +329,7 @@ class AutotuneWindow(QtWidgets.QWidget):
         return widget
 
     def _line_edit(self, default):
-        edit = QtWidgets.QLineEdit(default)
+        edit = PVLineEdit(default)
         edit.setClearButtonEnabled(True)
         return edit
 
@@ -275,9 +376,8 @@ class AutotuneWindow(QtWidgets.QWidget):
             prefix=self.pv_prefix.text().strip() or "",
             sp=self.pv_sp.text().strip(),
             sp_rbv=self.pv_sp_rbv.text().strip(),
-            vel_act=self.pv_vel.text().strip(),
-            pos_act=self.pv_pos.text().strip(),
-            trq_act=self.pv_trq.text().strip(),
+            act=self.pv_act.text().strip(),
+            extra_logs=self._parse_extra_pvs(self.pv_extra.toPlainText()),
         )
         ex_cfg = pipeline.ExcitationSettings(
             fs=self._float(self.ex_fs, "Sampling frequency"),
@@ -313,6 +413,36 @@ class AutotuneWindow(QtWidgets.QWidget):
             pi_zeta=self._float(self.me_pi_zeta, "PI zeta"),
         )
         return pv_cfg, ex_cfg, an_cfg, mech_cfg
+
+    def _parse_extra_pvs(self, text):
+        extra = {}
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip()
+            else:
+                key = line
+                value = line
+            if not key or not value:
+                continue
+            extra[key] = value
+        return extra
+
+    def _insert_pv_text(self, value):
+        widget = QtWidgets.QApplication.focusWidget()
+        if isinstance(widget, QtWidgets.QLineEdit):
+            widget.setText(value)
+        elif isinstance(widget, QtWidgets.QPlainTextEdit):
+            text = widget.toPlainText().strip()
+            if text:
+                text += "\n" + value
+            else:
+                text = value
+            widget.setPlainText(text)
 
     def _float(self, edit, label):
         text = edit.text().strip()
@@ -380,13 +510,17 @@ class AutotuneWindow(QtWidgets.QWidget):
 
     def _on_worker_failed(self, trace):
         self.append_log(trace)
-        QtWidgets.QMessageBox.critical(self, "Worker failed", trace)
+        if trace.lower().startswith("measurement aborted"):
+            QtWidgets.QMessageBox.information(self, "Measurement aborted", trace)
+        else:
+            QtWidgets.QMessageBox.critical(self, "Worker failed", trace)
         self.progress_bar.setValue(0)
         self.abort_btn.setEnabled(False)
 
     def _abort_worker(self):
         if self.worker and self.worker_thread:
             self.append_log("Abort requested by user")
+            self.worker.request_abort()
             self.worker_thread.requestInterruption()
             QtWidgets.QMessageBox.information(self, "Abort", "Stop requested. Allow current PV puts to finish.")
 
