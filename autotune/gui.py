@@ -122,7 +122,7 @@ MODE_DEFINITIONS = {
             "response_units": "user units",
             "ylabel": "Speed / Position",
         },
-        "mechanical_hint": "Mechanical identification is disabled in CSV position tuning mode.",
+        "mechanical_hint": "Mechanical identification is disabled; PID suggestions use the shared PI bandwidth/zeta.",
     },
     "generic": {
         "label": "Generic mode",
@@ -331,6 +331,7 @@ class AutotuneWindow(QtWidgets.QWidget):
         self.tabs.addTab(self._build_analysis_tab(), "Analysis")
         self.mechanical_tab = self._build_mechanical_tab()
         self.tabs.addTab(self.mechanical_tab, "Mechanical")
+        self.tabs.addTab(self._build_pid_tab(), "PID Tune")
         settings_layout.addWidget(self.tabs)
 
         log_path_row = QtWidgets.QHBoxLayout()
@@ -539,24 +540,32 @@ class AutotuneWindow(QtWidgets.QWidget):
         self._set_tooltip(self.me_deriv, "Cutoff for derivative filter when estimating velocity/acceleration.")
         self.me_deadband = self._line_edit("0.001")
         self._set_tooltip(self.me_deadband, "Deadband applied to small velocity values to reduce noise.")
-        self.me_pi_bw = self._line_edit("100")
-        self._set_tooltip(self.me_pi_bw, "Target closed-loop bandwidth for the suggested PI gains.")
-        self.me_pi_zeta = self._line_edit("1.0")
-        self._set_tooltip(self.me_pi_zeta, "Desired damping ratio for the suggested PI gains.")
         form.addRow("Motor rated torque [Nm]", self.me_motor)
         form.addRow("Torque scale [Nm/unit]", self.me_torque_scale)
         form.addRow("Velocity scale", self.me_vel_scale)
         form.addRow("Smooth cutoff [Hz]", self.me_smooth)
         form.addRow("Derivative cutoff [Hz]", self.me_deriv)
         form.addRow("Velocity deadband", self.me_deadband)
-        form.addRow("PI bandwidth [Hz]", self.me_pi_bw)
-        form.addRow("PI zeta", self.me_pi_zeta)
         layout.addLayout(form)
         self.mechanical_hint_label = QtWidgets.QLabel("")
         self.mechanical_hint_label.setWordWrap(True)
         self.mechanical_hint_label.setStyleSheet("color: #a00;")
         layout.addWidget(self.mechanical_hint_label)
         layout.addStretch(1)
+        return widget
+
+    def _build_pid_tab(self):
+        widget = QtWidgets.QWidget()
+        form = QtWidgets.QFormLayout(widget)
+        self.pid_bw = self._line_edit("100")
+        self._set_tooltip(self.pid_bw, "Target closed-loop bandwidth used for PI/PID suggestions.")
+        self.pid_zeta = self._line_edit("1.0")
+        self._set_tooltip(self.pid_zeta, "Desired damping ratio for the suggested controllers.")
+        form.addRow("Target bandwidth [Hz]", self.pid_bw)
+        form.addRow("Target zeta", self.pid_zeta)
+        note = QtWidgets.QLabel("Velocity PI (CST) and position PID (CSV position tune) both use these targets.")
+        note.setWordWrap(True)
+        form.addRow(note)
         return widget
 
     def _line_edit(self, default):
@@ -718,8 +727,8 @@ class AutotuneWindow(QtWidgets.QWidget):
             smooth_hz=self._float(self.me_smooth, "Smooth cutoff"),
             deriv_hz=self._float(self.me_deriv, "Derivative cutoff"),
             vel_deadband=self._float(self.me_deadband, "Velocity deadband"),
-            pi_bandwidth=self._float(self.me_pi_bw, "PI bandwidth"),
-            pi_zeta=self._float(self.me_pi_zeta, "PI zeta"),
+            pi_bandwidth=self._float(self.pid_bw, "Target bandwidth"),
+            pi_zeta=self._float(self.pid_zeta, "Target zeta"),
         )
         return pv_cfg, ex_cfg, an_cfg, mech_cfg
 
@@ -921,6 +930,13 @@ class AutotuneWindow(QtWidgets.QWidget):
                 self.append_log(
                     f"Suggested PI: Kp={mech['kp']:.4g}, Ki={mech['ki']:.4g}, Ti={mech['ti']:.4g}"
                 )
+        if result.position_pid:
+            pid = result.position_pid
+            self.append_log(
+                "Position PID -> "
+                f"Kp={pid['kp']:.4g}, Ki={pid['ki']:.4g}, Kd={pid['kd']:.4g}, Ti={pid['ti']:.4g} "
+                f"(target {pid['target_bw_hz']:.4g} Hz, zeta={pid['zeta']:.3g})"
+            )
 
     def _show_bode_popup(self):
         if not self.last_bode_data:

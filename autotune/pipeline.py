@@ -153,6 +153,7 @@ class RunResult(object):
         segments=None,
         mechanical=None,
         mode=DEFAULT_MODE,
+        position_pid=None,
     ):
         self.t = np.asarray(t)
         self.values_by_pv = {k: np.asarray(v) for k, v in values_by_pv.items()}
@@ -163,6 +164,7 @@ class RunResult(object):
         self.segments = segments
         self.mechanical = mechanical
         self.mode = _normalize_mode(mode)
+        self.position_pid = position_pid
 
 
 def run_measurement(
@@ -276,6 +278,7 @@ def run_measurement(
         segments=result.segments,
         mechanical=result.mechanical,
         mode=mode,
+        position_pid=result.position_pid,
     )
 
 
@@ -365,6 +368,9 @@ def _analyze(
     mechanical_result = None
     if _mode_supports_mechanical(mode):
         mechanical_result = _fit_mechanical(t, vals_by_pv, cmd_key, resp_key, fs, mechanical)
+    position_pid = None
+    if mode == "csv_position_tune":
+        position_pid = _position_pid_from_settings(mechanical)
 
     return RunResult(
         t=np.asarray(t),
@@ -376,6 +382,7 @@ def _analyze(
         segments=segments,
         mechanical=mechanical_result,
         mode=mode,
+        position_pid=position_pid,
     )
 
 
@@ -406,6 +413,32 @@ def _fit_mechanical(t, vals_by_pv, cmd_key, resp_key, fs, mechanical):
     except Exception:
         mechanical_result = None
     return mechanical_result
+
+
+def _position_pid_from_settings(mechanical):
+    if mechanical is None:
+        return None
+    try:
+        bw = float(mechanical.pi_bandwidth)
+        zeta = float(mechanical.pi_zeta)
+    except Exception:
+        return None
+    if not np.isfinite(bw) or bw <= 0.0:
+        return None
+    if not np.isfinite(zeta) or zeta <= 0.0:
+        zeta = 1.0
+    wn = 2.0 * np.pi * bw
+    kp = 2.0 * zeta * wn
+    ki = wn * wn
+    kd = 0.0
+    return {
+        "kp": float(kp),
+        "ki": float(ki),
+        "kd": float(kd),
+        "ti": (kp / ki) if ki > 1e-12 else float("inf"),
+        "target_bw_hz": bw,
+        "zeta": zeta,
+    }
 
 
 def _infer_sample_rate(t):
