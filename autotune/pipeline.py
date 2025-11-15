@@ -20,7 +20,7 @@ VELOCITY_SCALE_TARGETS = {
     "csv_position_tune": {"SP", "SP_RBV", "VEL_ACT"},
 }
 TORQUE_SCALE_TARGETS = {
-    "cst_velocity": {"SP", "SP_RBV", "TRQ_ACT"},
+    "cst_velocity": {"SP_RBV", "TRQ_ACT"},
 }
 MEASUREMENT_MODES = {
     "cst_velocity": {"label": "CST velocity loop tuning", "supports_mechanical": True},
@@ -307,6 +307,7 @@ def run_measurement(
     result = _analyze_with_fallback(t, vals_by_pv, excitation.fs, analysis, mechanical, log_path, mode)
     if log_path is None:
         return result
+    print(f"[mech] finalize -> mechanical_result is {'present' if result.mechanical else 'None'}")
     return RunResult(
         t=result.t,
         values_by_pv=result.values_by_pv,
@@ -355,6 +356,7 @@ def _analyze(
     log_path,
     mode,
     torque_scaled=False,
+    velocity_scaled=False,
 ):
     mode = _normalize_mode(mode)
     cmd_key = "SP_RBV" if "SP_RBV" in vals_by_pv else ("SP" if "SP" in vals_by_pv else None)
@@ -406,11 +408,19 @@ def _analyze(
     }
 
     mechanical_result = None
-    if mode in ("cst_velocity", "csv_position_tune"):
-        mechanical_result = _fit_mechanical(t, vals_by_pv, cmd_key, resp_key, fs, mechanical, torque_scaled)
+    if mode == "cst_velocity":
+        print(f"[mech] mode={mode} -> attempting mechanical fit (cmd={cmd_key}, resp={resp_key})")
+        mechanical_result = _fit_mechanical(
+            t, vals_by_pv, cmd_key, resp_key, fs, mechanical, torque_scaled, velocity_scaled
+        )
     position_pid = None
     if mode == "csv_position_tune":
         position_pid = _position_pid_from_bode(bode_payload, mechanical)
+
+    if mechanical_result is not None:
+        print(f"[mech] finalize mechanical_result=present id={hex(id(mechanical_result))} mode={mode}")
+    else:
+        print(f"[mech] finalize mechanical_result=None mode={mode}")
 
     return RunResult(
         t=np.asarray(t),
@@ -429,15 +439,43 @@ def _analyze(
 def _analyze_with_fallback(t, vals_by_pv, fs, analysis, mechanical, log_path, mode):
     mode = _normalize_mode(mode)
     torque_scale = _torque_scale_factor(mechanical) if mechanical else 1.0
-    torque_scaled = mode == "cst_velocity" and abs(torque_scale - 1.0) > 1e-12
+    torque_scaled = False
     arrays = {k: np.asarray(v) for k, v in vals_by_pv.items()}
-    arrays = _apply_torque_scale(arrays, torque_scale if torque_scaled else 1.0, mode)
-    arrays = _apply_velocity_scale(arrays, getattr(mechanical, "velocity_scale", None) if mechanical else None, mode)
+    arrays = _apply_torque_scale(arrays, torque_scale, mode)
+    torque_scaled = mode == "cst_velocity" and abs(torque_scale - 1.0) > 1e-12
+    velocity_scale = getattr(mechanical, "velocity_scale", None) if mechanical else None
+    velocity_scaled = False
+    if velocity_scale is not None:
+        try:
+            velocity_value = float(velocity_scale)
+        except (TypeError, ValueError):
+            velocity_scale = None
+        else:
+            targets = VELOCITY_SCALE_TARGETS.get(mode)
+            if targets and np.isfinite(velocity_value) and abs(velocity_value - 1.0) > 1e-12:
+                velocity_scale = velocity_value
+                velocity_scaled = True
+            else:
+                velocity_scale = None
+    arrays = _apply_velocity_scale(arrays, velocity_scale, mode)
     try:
-        return _analyze(t, arrays, fs, analysis, mechanical, log_path, mode, torque_scaled=torque_scaled)
+        result = _analyze(
+            t,
+            arrays,
+            fs,
+            analysis,
+            mechanical,
+            log_path,
+            mode,
+            torque_scaled=torque_scaled,
+            velocity_scaled=velocity_scaled,
+        )
+        print(f"[analyze] completed mode={mode} mechanical={'yes' if result.mechanical else 'no'}")
+        return result
     except RuntimeError as exc:
         if mode != "logger":
             raise
+        print(f"[analyze] RuntimeError -> {exc}; returning basic result")
         return _basic_run_result(t, arrays, log_path, mode)
 
 
@@ -469,18 +507,36 @@ def _basic_run_result(t, vals_by_pv, log_path, mode):
     )
 
 
-def _fit_mechanical(t, vals_by_pv, cmd_key, resp_key, fs, mechanical, torque_scaled):
+def _fit_mechanical(t, vals_by_pv, cmd_key, resp_key, fs, mechanical, torque_scaled, velocity_scaled):
     mechanical_result = None
     trq_key = "TRQ_ACT" if "TRQ_ACT" in vals_by_pv else cmd_key
     try:
         torque_scale = 1.0 if torque_scaled else mechanical.torque_multiplier()
+        if velocity_scaled:
+            vel_scale = 1.0
+        else:
+            try:
+                vel_scale = float(getattr(mechanical, "velocity_scale", 1.0))
+            except (TypeError, ValueError):
+                vel_scale = 1.0
+        print(
+            "[mech] inputs -> torque_scale=%.4g vel_scale=%.4g len(cmd)=%d len(resp)=%d (scaled torque=%s vel=%s)"
+            % (
+                torque_scale,
+                vel_scale if vel_scale is not None else float("nan"),
+                len(vals_by_pv[trq_key]),
+                len(vals_by_pv[resp_key]),
+                "yes" if torque_scaled else "no",
+                "yes" if velocity_scaled else "no",
+            )
+        )
         mechanical_result = analyze.fit_mechanical_model(
             t,
             vals_by_pv[trq_key],
             vals_by_pv[resp_key],
             fs=fs,
             torque_scale=torque_scale,
-            vel_scale=mechanical.velocity_scale,
+            vel_scale=vel_scale,
             smooth_hz=mechanical.smooth_hz,
             deriv_hz=mechanical.deriv_hz,
             vel_deadband=mechanical.vel_deadband,
@@ -494,8 +550,20 @@ def _fit_mechanical(t, vals_by_pv, cmd_key, resp_key, fs, mechanical, torque_sca
         mechanical_result["kp"] = kp
         mechanical_result["ki"] = ki
         mechanical_result["ti"] = (kp / ki) if ki > 1e-12 else float("inf")
-    except Exception:
+        print(
+            "[mech] success -> J=%.4g B=%.4g kp=%.4g ki=%.4g id=%s"
+            % (
+                mechanical_result.get("J", float("nan")),
+                mechanical_result.get("B", float("nan")),
+                kp,
+                ki,
+                hex(id(mechanical_result)),
+            )
+        )
+    except Exception as exc:
+        print(f"[mech] fit failed: {exc}")
         mechanical_result = None
+    return mechanical_result
 
 
 def _pv_settings_to_dict(pv):
@@ -652,6 +720,10 @@ def _apply_torque_scale(vals_by_pv, scale, mode):
         if key in targets:
             arr = arr * scale
         scaled[key] = arr
+    if mode == "cst_velocity":
+        for key in ("TRQ_ACT", "SP_RBV"):
+            if key in scaled:
+                print(f"[mech] torque scale applied to {key}: first 3 -> {scaled[key][:3]}")
     return scaled
 
 

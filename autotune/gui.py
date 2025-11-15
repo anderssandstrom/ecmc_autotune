@@ -167,7 +167,7 @@ MODE_DEFINITIONS = {
             "response_units": "user units",
             "ylabel": "Speed / Position",
         },
-        "mechanical_hint": "Mechanical identification feeds the bode-based PID suggestion.",
+        "mechanical_hint": "",
     },
     "generic": {
         "label": "Generic mode",
@@ -392,6 +392,9 @@ class AutotuneWindow(QtWidgets.QWidget):
         self.current_mode_key = pipeline.DEFAULT_MODE
         self._last_auto_values = {}
         self.segment_overlay_cb = None
+        self.mechanical_hint_label = QtWidgets.QLabel("")
+        self.mechanical_hint_label.setWordWrap(True)
+        self.mechanical_hint_label.setStyleSheet("color: #a00;")
         self._build_ui()
 
     # -----------------------
@@ -411,9 +414,6 @@ class AutotuneWindow(QtWidgets.QWidget):
         self.tabs.setDocumentMode(True)
         self.tabs.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
         self.tabs.setMaximumHeight(320)
-        self.mechanical_hint_label = QtWidgets.QLabel("")
-        self.mechanical_hint_label.setWordWrap(True)
-        self.mechanical_hint_label.setStyleSheet("color: #a00;")
         self.flow_tab = self._build_flow_tab()
         self.pv_tab = self._build_pv_tab()
         self.exc_tab = self._build_excitation_tab()
@@ -677,13 +677,6 @@ class AutotuneWindow(QtWidgets.QWidget):
         layout.addWidget(self.mech_filter_group, 1)
         return widget
 
-    def _build_mechanical_tab(self):
-        widget = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(widget)
-        layout.addWidget(self.mechanical_hint_label)
-        layout.addStretch(1)
-        return widget
-
     def _build_pid_tab(self):
         widget = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(widget)
@@ -866,10 +859,9 @@ class AutotuneWindow(QtWidgets.QWidget):
 
         mech_hint = config.get("mechanical_hint", "")
         supports_mech = bool(config.get("supports_mechanical"))
-        if supports_mech and not mech_hint:
-            mech_hint = ""
-        self.mechanical_hint_label.setText(mech_hint)
-        self.mechanical_hint_label.setVisible(bool(mech_hint))
+        hint_text = mech_hint if supports_mech else ""
+        self.mechanical_hint_label.setText(hint_text)
+        self.mechanical_hint_label.setVisible(bool(hint_text))
         if hasattr(self, "mech_filter_group") and self.mech_filter_group is not None:
             self.mech_filter_group.setEnabled(supports_mech)
         torque_enabled = resolved_key == "cst_velocity"
@@ -1447,6 +1439,7 @@ class AutotuneWindow(QtWidgets.QWidget):
         for item in items:
             item.setEditable(False)
         self.pid_result_model.appendRow(items)
+        print("[PID] table rows:", self.pid_result_model.rowCount())
 
     def _clear_pid_results(self):
         if not hasattr(self, "pid_result_model") or self.pid_result_model is None:
@@ -1454,6 +1447,7 @@ class AutotuneWindow(QtWidgets.QWidget):
         self.pid_result_model.removeRows(0, self.pid_result_model.rowCount())
 
     def _report_result(self, result):
+        print(f"[PID] _report_result called; mechanical={'yes' if bool(getattr(result,'mechanical',None)) else 'no'} mode={getattr(result,'mode',None)}")
         if result.log_file:
             self.append_log(f"Log: {result.log_file}")
         if result.mechanical:
@@ -1465,6 +1459,7 @@ class AutotuneWindow(QtWidgets.QWidget):
                 self.append_log(
                     f"Suggested PI: Kp={mech['kp']:.4g}, Ki={mech['ki']:.4g}, Ti={mech['ti']:.4g}"
                 )
+                print("[PID] appending velocity PI row", mech.get("kp"), mech.get("ki"), mech.get("ti"))
                 self._append_pid_result("Velocity PI", mech['kp'], mech['ki'], 0.0, mech.get('ti'))
         if result.position_pid:
             pid = result.position_pid
