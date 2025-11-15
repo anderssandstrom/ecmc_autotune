@@ -12,6 +12,12 @@ except ImportError:  # pragma: no cover - fallback for direct execution
 
 
 DEFAULT_MODE = "cst_velocity"
+VELOCITY_COMMAND_MODES = {"csv_velocity_bode", "csv_position_tune"}
+VELOCITY_SCALE_TARGETS = {
+    "cst_velocity": {"ACT", "VEL_ACT"},
+    "csv_velocity_bode": {"SP", "SP_RBV", "ACT", "VEL_ACT"},
+    "csv_position_tune": {"SP", "SP_RBV", "VEL_ACT"},
+}
 MEASUREMENT_MODES = {
     "cst_velocity": {"label": "CST velocity loop tuning", "supports_mechanical": True},
     "csv_velocity_bode": {"label": "CSV closed loop bode", "supports_mechanical": False},
@@ -215,6 +221,7 @@ def run_measurement(
     duration = len(command) / float(excitation.fs)
     _log(log_fn, f"Command length: {duration:.1f} s ({len(command)} samples)")
 
+    command_scale = _command_scale_factor(mode, mechanical)
     mylogger = epics_logger.logger(Ts=1.0 / float(excitation.fs), pvs=pvs)
     _verify_pv_connections(mylogger, log_fn)
     sp_pv = mylogger.pvs.get("SP")
@@ -241,7 +248,10 @@ def run_measurement(
                 _log(log_fn, "Abort requested; stopping command stream...")
                 break
             if not log_only and sp_pv is not None:
-                sp_pv.put(float(value), wait=False)
+                cmd_val = float(value)
+                if command_scale not in (0.0, 1.0):
+                    cmd_val = cmd_val / command_scale
+                sp_pv.put(cmd_val, wait=False)
             t_next += dt
             if progress_fn:
                 progress_fn(idx / total)
@@ -409,12 +419,14 @@ def _analyze(
 
 def _analyze_with_fallback(t, vals_by_pv, fs, analysis, mechanical, log_path, mode):
     mode = _normalize_mode(mode)
+    arrays = {k: np.asarray(v) for k, v in vals_by_pv.items()}
+    arrays = _apply_velocity_scale(arrays, getattr(mechanical, "velocity_scale", None) if mechanical else None, mode)
     try:
-        return _analyze(t, vals_by_pv, fs, analysis, mechanical, log_path, mode)
+        return _analyze(t, arrays, fs, analysis, mechanical, log_path, mode)
     except RuntimeError as exc:
         if mode != "logger":
             raise
-        return _basic_run_result(t, vals_by_pv, log_path, mode)
+        return _basic_run_result(t, arrays, log_path, mode)
 
 
 def _basic_run_result(t, vals_by_pv, log_path, mode):
@@ -471,7 +483,6 @@ def _fit_mechanical(t, vals_by_pv, cmd_key, resp_key, fs, mechanical):
         mechanical_result["ti"] = (kp / ki) if ki > 1e-12 else float("inf")
     except Exception:
         mechanical_result = None
-    return mechanical_result
 
 
 def _pv_settings_to_dict(pv):
@@ -579,6 +590,37 @@ def _position_pid_from_targets(bw, zeta):
         "gain_from_bode": False,
         "plant_gain": None,
     }
+
+
+def _command_scale_factor(mode, mechanical):
+    if mechanical is None:
+        return 1.0
+    try:
+        scale = float(mechanical.velocity_scale)
+    except (TypeError, ValueError):
+        return 1.0
+    if not np.isfinite(scale) or scale == 0.0:
+        return 1.0
+    return scale if mode in VELOCITY_COMMAND_MODES else 1.0
+
+
+def _apply_velocity_scale(vals_by_pv, scale, mode):
+    try:
+        scale = float(scale)
+    except (TypeError, ValueError):
+        return vals_by_pv
+    if not np.isfinite(scale) or abs(scale - 1.0) < 1e-12:
+        return vals_by_pv
+    targets = VELOCITY_SCALE_TARGETS.get(mode)
+    if not targets:
+        return vals_by_pv
+    scaled = {}
+    for key, values in vals_by_pv.items():
+        arr = np.asarray(values)
+        if key in targets:
+            arr = arr * scale
+        scaled[key] = arr
+    return scaled
 
 
 def _infer_sample_rate(t):
