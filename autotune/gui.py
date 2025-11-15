@@ -1,7 +1,9 @@
 import os
 import sys
 import traceback
+import pickle
 from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 from PyQt5 import QtCore, QtGui, QtWidgets
@@ -385,6 +387,7 @@ class AutotuneWindow(QtWidgets.QWidget):
         self.tabs.setDocumentMode(True)
         self.tabs.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
         self.tabs.setMaximumHeight(320)
+        self.tabs.addTab(self._build_flow_tab(), "Flow")
         self.tabs.addTab(self._build_pv_tab(), "PV Settings")
         self.tabs.addTab(self._build_excitation_tab(), "Excitation")
         self.tabs.addTab(self._build_analysis_tab(), "Analysis")
@@ -492,6 +495,8 @@ class AutotuneWindow(QtWidgets.QWidget):
         self.pv_sp = self._line_edit("")
         self.pv_sp_rbv = self._line_edit("")
         self.pv_act = self._line_edit("")
+        form_container_right = QtWidgets.QWidget()
+        form_right = QtWidgets.QVBoxLayout(form_container_right)
         self.pv_extra = PVPlainTextEdit("")
         self.pv_extra.setPlaceholderText("One PV per line (optional NAME=PV). Empty line removes logging.")
         self.pv_prefix_label_p = QtWidgets.QLabel("Prefix P")
@@ -505,7 +510,7 @@ class AutotuneWindow(QtWidgets.QWidget):
         form.addRow(self.pv_sp_label, self.pv_sp)
         form.addRow(self.pv_sp_rbv_label, self.pv_sp_rbv)
         form.addRow(self.pv_act_label, self.pv_act)
-        form.addRow(self.pv_extra_label, self.pv_extra)
+        layout.addWidget(form_container, 2)
         self._pv_fields = {
             "prefix_p": self.pv_prefix_p,
             "prefix_r": self.pv_prefix_r,
@@ -513,8 +518,6 @@ class AutotuneWindow(QtWidgets.QWidget):
             "sp_rbv": self.pv_sp_rbv,
             "act": self.pv_act,
         }
-        layout.addWidget(form_container, 2)
-
         suggestion_box = QtWidgets.QGroupBox("Available PVs")
         suggestion_layout = QtWidgets.QVBoxLayout(suggestion_box)
         hint = QtWidgets.QLabel("Double-click to insert into focused field or drag text.")
@@ -525,11 +528,17 @@ class AutotuneWindow(QtWidgets.QWidget):
         self._set_tooltip(self.pv_list, "Drag or double-click to copy common PV names into the fields.")
         suggestion_layout.addWidget(self.pv_list)
         layout.addWidget(suggestion_box, 1)
+
+        layout.addWidget(form_container_right, 1)
+        form_right.addWidget(self.pv_extra_label)
+        form_right.addWidget(self.pv_extra)
         return widget
 
     def _build_excitation_tab(self):
         widget = QtWidgets.QWidget()
-        form = QtWidgets.QFormLayout(widget)
+        layout = QtWidgets.QHBoxLayout(widget)
+        left_form = QtWidgets.QFormLayout()
+        right_form = QtWidgets.QFormLayout()
         self.ex_fs = self._line_edit("1000")
         self._set_tooltip(self.ex_fs, "Logger sampling frequency and excitation update rate in Hz.")
         self.ex_f_start = self._line_edit("10")
@@ -550,16 +559,22 @@ class AutotuneWindow(QtWidgets.QWidget):
         self._set_tooltip(self.ex_trans_frac, "Fraction of settle time spent in transition ramps.")
         self.ex_taper = self._line_edit("1.0")
         self._set_tooltip(self.ex_taper, "Number of cycles used to taper the edges of the excitation waveform.")
-        form.addRow("fs [Hz]", self.ex_fs)
-        form.addRow("f start [Hz]", self.ex_f_start)
-        form.addRow("f stop [Hz]", self.ex_f_stop)
-        form.addRow("Points", self.ex_points)
-        form.addRow("Amplitude", self.ex_amp)
-        form.addRow("Settle cycles", self.ex_settle)
-        form.addRow("Measure cycles", self.ex_meas)
-        form.addRow("Transition min [s]", self.ex_trans_min)
-        form.addRow("Transition frac", self.ex_trans_frac)
-        form.addRow("Edge taper cycles", self.ex_taper)
+        left_form.addRow("fs [Hz]", self.ex_fs)
+        left_form.addRow("f start [Hz]", self.ex_f_start)
+        left_form.addRow("f stop [Hz]", self.ex_f_stop)
+        left_form.addRow("Points", self.ex_points)
+        left_form.addRow("Amplitude", self.ex_amp)
+        right_form.addRow("Settle cycles", self.ex_settle)
+        right_form.addRow("Measure cycles", self.ex_meas)
+        right_form.addRow("Transition min [s]", self.ex_trans_min)
+        right_form.addRow("Transition frac", self.ex_trans_frac)
+        right_form.addRow("Edge taper cycles", self.ex_taper)
+        layout.addLayout(left_form, 1)
+        layout.addLayout(right_form, 1)
+        preview_btn = QtWidgets.QPushButton("Preview excitation")
+        preview_btn.clicked.connect(self._preview_excitation_signal)
+        self._set_tooltip(preview_btn, "Generate and plot the current excitation waveform.")
+        layout.addWidget(preview_btn)
         return widget
 
     def _build_analysis_tab(self):
@@ -628,16 +643,75 @@ class AutotuneWindow(QtWidgets.QWidget):
 
     def _build_pid_tab(self):
         widget = QtWidgets.QWidget()
-        form = QtWidgets.QFormLayout(widget)
+        layout = QtWidgets.QVBoxLayout(widget)
+        form = QtWidgets.QFormLayout()
         self.pid_bw = self._line_edit("100")
         self._set_tooltip(self.pid_bw, "Target closed-loop bandwidth used for PI/PID suggestions.")
         self.pid_zeta = self._line_edit("1.0")
         self._set_tooltip(self.pid_zeta, "Desired damping ratio for the suggested controllers.")
         form.addRow("Target bandwidth [Hz]", self.pid_bw)
         form.addRow("Target zeta", self.pid_zeta)
+        layout.addLayout(form)
         note = QtWidgets.QLabel("Velocity PI (CST) and position PID (CSV position tune) both use these targets.")
         note.setWordWrap(True)
-        form.addRow(note)
+        layout.addWidget(note)
+        layout.addWidget(QtWidgets.QLabel("Latest suggestions"))
+        self.pid_result_model = QtGui.QStandardItemModel(0, 5, widget)
+        self.pid_result_model.setHorizontalHeaderLabels([
+            "Mode",
+            "Kp [unit/command]",
+            "Ki [unit/command/s]",
+            "Kd [unit/command·s]",
+            "Ti [s]",
+        ])
+        self.pid_result_view = QtWidgets.QTableView()
+        self.pid_result_view.setModel(self.pid_result_model)
+        self.pid_result_view.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        results_row = QtWidgets.QHBoxLayout()
+        results_row.addWidget(self.pid_result_view, 1)
+        clear_btn = QtWidgets.QPushButton("Clear results")
+        clear_btn.setMaximumWidth(120)
+        clear_btn.clicked.connect(self._clear_pid_results)
+        button_column = QtWidgets.QVBoxLayout()
+        button_column.addWidget(clear_btn)
+        button_column.addStretch(1)
+        results_row.addLayout(button_column)
+        layout.addLayout(results_row)
+        layout.addStretch(1)
+        return widget
+
+    def _build_flow_tab(self):
+        widget = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(widget)
+        intro = QtWidgets.QLabel("Overview of the measurement / analysis flow. Follow the steps from left to right.")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+        flow_layout = QtWidgets.QHBoxLayout()
+        layout.addLayout(flow_layout)
+        steps = [
+            ("PV Setup", "Define prefixes and select PVs to monitor/control."),
+            ("Excitation", "Configure stepped-sine or choose Logger mode."),
+            ("Acquire", "Run measurement or logging; data stored to log file."),
+            ("Analyze", "Bode analysis + plant fit; CSV logger skips if unavailable."),
+            ("Suggest", "Generate PI/PID suggestions when applicable."),
+        ]
+        for idx, (title, desc) in enumerate(steps):
+            card = QtWidgets.QGroupBox(title)
+            card_layout = QtWidgets.QVBoxLayout(card)
+            label = QtWidgets.QLabel(desc)
+            label.setWordWrap(True)
+            card_layout.addWidget(label)
+            flow_layout.addWidget(card, 1)
+            if idx < len(steps) - 1:
+                arrow = QtWidgets.QLabel("→")
+                arrow.setAlignment(QtCore.Qt.AlignCenter)
+                arrow.setFixedWidth(24)
+                flow_layout.addWidget(arrow)
+        flow_layout.addStretch(1)
+        hint = QtWidgets.QLabel("Mechanical identification and PID suggestion blocks are enabled per mode (see left tabs).")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        layout.addStretch(1)
         return widget
 
     def _line_edit(self, default):
@@ -745,6 +819,38 @@ class AutotuneWindow(QtWidgets.QWidget):
             dict(pv=pv_cfg, excitation=ex_cfg, analysis=an_cfg, mechanical=mech_cfg, log_filename=log_path, mode=mode_key),
         )
 
+    def _preview_excitation_signal(self):
+        try:
+            _, ex_cfg, _, _ = self._collect_settings()
+        except ValueError as exc:
+            QtWidgets.QMessageBox.critical(self, "Invalid excitation", str(exc))
+            return
+        try:
+            t, u, *_ = excite_sine.generate(
+                ex_cfg.fs,
+                ex_cfg.f_start,
+                ex_cfg.f_stop,
+                ex_cfg.n_points,
+                ex_cfg.amp,
+                ex_cfg.n_settle,
+                ex_cfg.n_meas,
+                transition_min_s=ex_cfg.transition_min_s,
+                transition_frac=ex_cfg.transition_frac,
+                edge_taper_cycles=ex_cfg.edge_taper_cycles,
+                preview=False,
+            )
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Excitation error", str(exc))
+            return
+        fig, ax = plt.subplots(1, 1, figsize=(8, 3))
+        ax.plot(t, u)
+        ax.set_xlabel("Time [s]")
+        ax.set_ylabel("Command")
+        ax.grid(True, linestyle="--", alpha=0.4)
+        ax.set_title("Excitation preview")
+        fig.tight_layout()
+        fig.show()
+
     def _start_reanalysis(self):
         try:
             _, _, an_cfg, mech_cfg = self._collect_settings()
@@ -767,6 +873,52 @@ class AutotuneWindow(QtWidgets.QWidget):
             path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Select log file", initial, "Pickle (*.pkl)")
         if path:
             self.log_path_edit.setText(path)
+            if not save:
+                self._load_pv_settings_from_log(path)
+
+    def _load_pv_settings_from_log(self, path):
+        try:
+            with open(path, "rb") as f:
+                payload = pickle.load(f)
+        except Exception as exc:
+            self.append_log(f"Failed to load log metadata: {exc}")
+            return
+        meta = {}
+        if isinstance(payload, dict):
+            if "metadata" in payload:
+                meta = payload.get("metadata") or {}
+            elif "pv_settings" in payload:
+                meta = payload
+        settings = meta.get("pv_settings") if isinstance(meta, dict) else None
+        if settings:
+            self._restore_pv_settings_from_meta(settings)
+
+    def _restore_pv_settings_from_meta(self, settings):
+        def set_line(widget, name, value):
+            value = value or ""
+            widget.setText(value)
+            self._last_auto_values[name] = value
+
+        if not isinstance(settings, dict):
+            return
+        set_line(self.pv_prefix_p, "prefix_p", settings.get("prefix_p", ""))
+        set_line(self.pv_prefix_r, "prefix_r", settings.get("prefix_r", ""))
+        set_line(self.pv_sp, "sp", settings.get("sp", ""))
+        set_line(self.pv_sp_rbv, "sp_rbv", settings.get("sp_rbv", ""))
+        set_line(self.pv_act, "act", settings.get("act", ""))
+        extra_logs = settings.get("extra_logs") or {}
+        lines = []
+        for key, value in extra_logs.items():
+            key = key or value
+            if not key:
+                continue
+            if value and value != key:
+                lines.append(f"{key}={value}")
+            else:
+                lines.append(key)
+        text = "\n".join(lines)
+        self.pv_extra.setPlainText(text)
+        self._last_auto_values["extra_logs"] = text
 
     def _collect_settings(self):
         pv_cfg = pipeline.PVSettings(
@@ -1046,6 +1198,25 @@ class AutotuneWindow(QtWidgets.QWidget):
         ax_sig.legend()
         self.time_canvas.draw_idle()
 
+    def _append_pid_result(self, label, kp, ki, kd, ti=None):
+        if not hasattr(self, "pid_result_model") or self.pid_result_model is None:
+            return
+        items = [
+            QtGui.QStandardItem(f"{label}"),
+            QtGui.QStandardItem(f"{kp:.4g}"),
+            QtGui.QStandardItem(f"{ki:.4g}"),
+            QtGui.QStandardItem(f"{kd:.4g}"),
+            QtGui.QStandardItem(f"{ti:.4g}" if ti is not None and np.isfinite(ti) else "∞"),
+        ]
+        for item in items:
+            item.setEditable(False)
+        self.pid_result_model.appendRow(items)
+
+    def _clear_pid_results(self):
+        if not hasattr(self, "pid_result_model") or self.pid_result_model is None:
+            return
+        self.pid_result_model.removeRows(0, self.pid_result_model.rowCount())
+
     def _report_result(self, result):
         if result.log_file:
             self.append_log(f"Log: {result.log_file}")
@@ -1058,6 +1229,7 @@ class AutotuneWindow(QtWidgets.QWidget):
                 self.append_log(
                     f"Suggested PI: Kp={mech['kp']:.4g}, Ki={mech['ki']:.4g}, Ti={mech['ti']:.4g}"
                 )
+                self._append_pid_result("Velocity PI", mech['kp'], mech['ki'], 0.0, mech.get('ti'))
         if result.position_pid:
             pid = result.position_pid
             source = "bode fit" if pid.get("gain_from_bode") else "targets"
@@ -1066,6 +1238,7 @@ class AutotuneWindow(QtWidgets.QWidget):
                 f"Kp={pid['kp']:.4g}, Ki={pid['ki']:.4g}, Kd={pid['kd']:.4g}, Ti={pid['ti']:.4g} "
                 f"(target {pid['target_bw_hz']:.4g} Hz, zeta={pid['zeta']:.3g}, source={source})"
             )
+            self._append_pid_result("Position PID", pid['kp'], pid['ki'], pid['kd'], pid.get('ti'))
 
     def _show_bode_popup(self):
         if not self.last_bode_data:

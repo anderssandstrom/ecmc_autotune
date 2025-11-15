@@ -23,6 +23,7 @@ class logger:
         self.Ts = float(Ts)
         self.pvs = {k: PV(v) for k, v in pvs.items()}
         self._buf = {}
+        self.metadata = {}
         for pv in self.pvs.values():
           if pv is not None:
             pv.prec = 4
@@ -66,7 +67,7 @@ class logger:
             finally:
                 self._cids.pop(key, None)
 
-    def save_log(self, filename):
+    def save_log(self, filename, metadata=None):
         """
         Save a log dict to compressed .npz file, plus optional JSON metadata.
     
@@ -77,8 +78,9 @@ class logger:
         if filename.suffix == "":
             filename = filename.with_suffix(".pkl")
 
+        payload = {"data": self._buf, "metadata": metadata or self.metadata or {}}
         with open(filename, "wb") as f:
-            pickle.dump(self._buf, f)
+            pickle.dump(payload, f)
         
         print(f"[saved] {filename}")
 
@@ -90,7 +92,13 @@ class logger:
         if filename.suffix == "":
             filename = filename.with_suffix(".pkl")
         with open(filename, "rb") as f:
-             self._buf = pickle.load(f)        
+            payload = pickle.load(f)
+        if isinstance(payload, dict) and "data" in payload and "metadata" in payload:
+            self._buf = payload.get("data", {})
+            self.metadata = payload.get("metadata", {})
+        else:
+            self._buf = payload
+            self.metadata = {}
         print(f"[loaded] {filename}")        
 
     def get_data(self):

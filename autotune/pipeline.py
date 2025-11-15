@@ -270,7 +270,22 @@ def run_measurement(
         if log_path.suffix == "":
             log_path = log_path.with_suffix(".pkl")
         log_path.parent.mkdir(parents=True, exist_ok=True)
-    mylogger.save_log(str(log_path))
+    meta = {
+        "mode": mode,
+        "pv_settings": {
+            "prefix_p": getattr(pv, "prefix_p", ""),
+            "prefix_r": getattr(pv, "prefix_r", ""),
+            "sp": pv.sp,
+            "sp_rbv": pv.sp_rbv,
+            "act": pv.act,
+            "extra_logs": pv.extra_logs,
+        },
+    }
+    try:
+        mylogger.metadata.update(meta)  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    mylogger.save_log(str(log_path), metadata=meta)
     _log(log_fn, f"Log saved to {log_path}")
 
     _log(log_fn, "Running analysis on captured data…")
