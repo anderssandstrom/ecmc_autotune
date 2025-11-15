@@ -36,18 +36,23 @@ MODE_DEFINITIONS = {
         "description": "Command torque (Trq) and observe velocity (VelAct). Mechanical model fitting and PI suggestions are enabled.",
         "supports_mechanical": True,
         "pv_defaults": {
-            "prefix": "c6025a-08:m1s000-",
+            "prefix_p": "c6025a-08:",
+            "prefix_r": "m1s000-",
             "sp": "Drv01-Trq",
             "sp_rbv": "Drv01-TrqAct",
             "act": "Drv01-VelAct",
         },
         "pv_labels": {
+            "prefix_p": "Prefix P",
+            "prefix_r": "Prefix R",
             "sp": "Torque command PV (SP) [%]",
             "sp_rbv": "Torque readback PV (SP_RBV) [%]",
             "act": "Velocity response PV (ACT)",
             "extra": "Extra log PVs",
         },
         "pv_tooltips": {
+            "prefix_p": "First prefix segment (e.g. IOC name). Leave blank for absolute PVs.",
+            "prefix_r": "Second prefix segment appended after P (e.g. axis identifier).",
             "sp": "EPICS PV that accepts the torque demand (e.g. Drv01-Trq). Values interpreted as percent torque before scaling.",
             "sp_rbv": "Readback of the commanded torque (e.g. Drv01-TrqAct). Used as the command trace for analysis.",
             "act": "Measured velocity feedback PV (e.g. Drv01-VelAct).",
@@ -67,18 +72,23 @@ MODE_DEFINITIONS = {
         "description": "Closed-loop velocity bode plot using speed demand (Spd) and velocity feedback (VelAct) in rad/s.",
         "supports_mechanical": False,
         "pv_defaults": {
-            "prefix": "c6025a-08:m1s000-",
+            "prefix_p": "c6025a-08:",
+            "prefix_r": "m1s000-",
             "sp": "Drv01-Spd",
             "sp_rbv": "",
             "act": "Drv01-VelAct",
         },
         "pv_labels": {
+            "prefix_p": "Prefix P",
+            "prefix_r": "Prefix R",
             "sp": "Speed command PV (SP) [rad/s]",
             "sp_rbv": "Speed readback PV (optional)",
             "act": "Velocity response PV (ACT) [rad/s]",
             "extra": "Extra log PVs",
         },
         "pv_tooltips": {
+            "prefix_p": "First prefix segment applied before PV names (optional).",
+            "prefix_r": "Second prefix segment appended after P.",
             "sp": "Speed demand PV to drive during the bode sweep (e.g. Drv01-Spd).",
             "sp_rbv": "Optional readback PV for the commanded speed. Leave blank to use SP.",
             "act": "Velocity feedback PV (VelAct) expressed in rad/s.",
@@ -96,20 +106,25 @@ MODE_DEFINITIONS = {
     "csv_position_tune": {
         "label": "CSV closed loop position loop tune",
         "description": "Use speed demand (Spd), velocity readback (VelAct) as command feedback, and position response (PosAct).",
-        "supports_mechanical": False,
+        "supports_mechanical": True,
         "pv_defaults": {
-            "prefix": "c6025a-08:m1s000-",
+            "prefix_p": "c6025a-08:",
+            "prefix_r": "m1s000-",
             "sp": "Drv01-Spd",
             "sp_rbv": "Drv01-VelAct",
             "act": "Enc01-PosAct",
         },
         "pv_labels": {
+            "prefix_p": "Prefix P",
+            "prefix_r": "Prefix R",
             "sp": "Speed command PV (SP) [rad/s]",
             "sp_rbv": "Velocity inner-loop PV (SP_RBV) [rad/s]",
             "act": "Position response PV (ACT)",
             "extra": "Extra log PVs",
         },
         "pv_tooltips": {
+            "prefix_p": "First prefix segment for PV shortcuts (optional).",
+            "prefix_r": "Second prefix segment appended after P.",
             "sp": "Outer-loop speed demand PV (Spd) to excite the position loop.",
             "sp_rbv": "Velocity feedback PV (VelAct) used as the command trace.",
             "act": "Position feedback PV (PosAct) used as the response.",
@@ -122,25 +137,30 @@ MODE_DEFINITIONS = {
             "response_units": "user units",
             "ylabel": "Speed / Position",
         },
-        "mechanical_hint": "Mechanical identification is disabled; PID suggestions use the shared PI bandwidth/zeta.",
+        "mechanical_hint": "Mechanical identification feeds the bode-based PID suggestion.",
     },
     "generic": {
         "label": "Generic mode",
         "description": "Fully manual configuration. Select and scale PVs as needed. Mechanical fitting is disabled.",
         "supports_mechanical": False,
         "pv_defaults": {
-            "prefix": "c6025a-08:m1s000-",
+            "prefix_p": "",
+            "prefix_r": "",
             "sp": "",
             "sp_rbv": "",
             "act": "",
         },
         "pv_labels": {
+            "prefix_p": "Prefix P",
+            "prefix_r": "Prefix R",
             "sp": "Command PV (SP)",
             "sp_rbv": "Command readback PV (SP_RBV)",
             "act": "Response PV (ACT)",
             "extra": "Extra log PVs",
         },
         "pv_tooltips": {
+            "prefix_p": "Optional first prefix segment prepended to PVs.",
+            "prefix_r": "Optional second prefix segment appended after P.",
             "sp": "EPICS PV to write during the excitation.",
             "sp_rbv": "Optional readback PV for the commanded signal.",
             "act": "Measured response PV used for analysis.",
@@ -418,25 +438,30 @@ class AutotuneWindow(QtWidgets.QWidget):
         layout = QtWidgets.QHBoxLayout(widget)
         form_container = QtWidgets.QWidget()
         form = QtWidgets.QFormLayout(form_container)
-        self.pv_prefix = self._line_edit("")
-        self._set_tooltip(self.pv_prefix, "Prefix prepended to PV names when they do not include a full record (leave blank for absolute PVs).")
+        self.pv_prefix_p = self._line_edit("")
+        self._set_tooltip(self.pv_prefix_p, "Prefix part P (optional).")
+        self.pv_prefix_r = self._line_edit("")
+        self._set_tooltip(self.pv_prefix_r, "Prefix part R (optional).")
         self.pv_sp = self._line_edit("")
         self.pv_sp_rbv = self._line_edit("")
         self.pv_act = self._line_edit("")
         self.pv_extra = PVPlainTextEdit("")
         self.pv_extra.setPlaceholderText("One PV per line (optional NAME=PV). Empty line removes logging.")
-        self.pv_prefix_label = QtWidgets.QLabel("Prefix")
+        self.pv_prefix_label_p = QtWidgets.QLabel("Prefix P")
+        self.pv_prefix_label_r = QtWidgets.QLabel("Prefix R")
         self.pv_sp_label = QtWidgets.QLabel("SP")
         self.pv_sp_rbv_label = QtWidgets.QLabel("SP_RBV")
         self.pv_act_label = QtWidgets.QLabel("ACT PV")
         self.pv_extra_label = QtWidgets.QLabel("Extra log PVs")
-        form.addRow(self.pv_prefix_label, self.pv_prefix)
+        form.addRow(self.pv_prefix_label_p, self.pv_prefix_p)
+        form.addRow(self.pv_prefix_label_r, self.pv_prefix_r)
         form.addRow(self.pv_sp_label, self.pv_sp)
         form.addRow(self.pv_sp_rbv_label, self.pv_sp_rbv)
         form.addRow(self.pv_act_label, self.pv_act)
         form.addRow(self.pv_extra_label, self.pv_extra)
         self._pv_fields = {
-            "prefix": self.pv_prefix,
+            "prefix_p": self.pv_prefix_p,
+            "prefix_r": self.pv_prefix_r,
             "sp": self.pv_sp,
             "sp_rbv": self.pv_sp_rbv,
             "act": self.pv_act,
@@ -590,12 +615,16 @@ class AutotuneWindow(QtWidgets.QWidget):
         desc = config.get("description", "")
         self.mode_description.setText(f"{label}: {desc}")
         pv_labels = config.get("pv_labels", {})
+        self.pv_prefix_label_p.setText(pv_labels.get("prefix_p", "Prefix P"))
+        self.pv_prefix_label_r.setText(pv_labels.get("prefix_r", "Prefix R"))
         self.pv_sp_label.setText(pv_labels.get("sp", "SP"))
         self.pv_sp_rbv_label.setText(pv_labels.get("sp_rbv", "SP_RBV"))
         self.pv_act_label.setText(pv_labels.get("act", "ACT PV"))
         self.pv_extra_label.setText(pv_labels.get("extra", "Extra log PVs"))
 
         pv_tooltips = config.get("pv_tooltips", {})
+        self._set_tooltip(self.pv_prefix_p, pv_tooltips.get("prefix_p", self.pv_prefix_p.toolTip() or ""))
+        self._set_tooltip(self.pv_prefix_r, pv_tooltips.get("prefix_r", self.pv_prefix_r.toolTip() or ""))
         self._set_tooltip(self.pv_sp, pv_tooltips.get("sp", self.pv_sp.toolTip() or ""))
         self._set_tooltip(self.pv_sp_rbv, pv_tooltips.get("sp_rbv", self.pv_sp_rbv.toolTip() or ""))
         self._set_tooltip(self.pv_act, pv_tooltips.get("act", self.pv_act.toolTip() or ""))
@@ -691,7 +720,8 @@ class AutotuneWindow(QtWidgets.QWidget):
 
     def _collect_settings(self):
         pv_cfg = pipeline.PVSettings(
-            prefix=self.pv_prefix.text().strip() or "",
+            prefix_p=self.pv_prefix_p.text().strip(),
+            prefix_r=self.pv_prefix_r.text().strip(),
             sp=self.pv_sp.text().strip(),
             sp_rbv=self.pv_sp_rbv.text().strip(),
             act=self.pv_act.text().strip(),
@@ -932,10 +962,11 @@ class AutotuneWindow(QtWidgets.QWidget):
                 )
         if result.position_pid:
             pid = result.position_pid
+            source = "bode fit" if pid.get("gain_from_bode") else "targets"
             self.append_log(
                 "Position PID -> "
                 f"Kp={pid['kp']:.4g}, Ki={pid['ki']:.4g}, Kd={pid['kd']:.4g}, Ti={pid['ti']:.4g} "
-                f"(target {pid['target_bw_hz']:.4g} Hz, zeta={pid['zeta']:.3g})"
+                f"(target {pid['target_bw_hz']:.4g} Hz, zeta={pid['zeta']:.3g}, source={source})"
             )
 
     def _show_bode_popup(self):

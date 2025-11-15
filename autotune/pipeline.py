@@ -25,13 +25,20 @@ class PVSettings(object):
 
     def __init__(
         self,
-        prefix="c6025a-08:m1s000-",
+        prefix=None,
         sp="Drv01-Trq",
         sp_rbv="Drv01-TrqAct",
         act="Drv01-VelAct",
         extra_logs=None,
+        prefix_p="c6025a-08:",
+        prefix_r="m1s000-",
     ):
-        self.prefix = prefix
+        if prefix is not None:
+            prefix_p = prefix or ""
+            prefix_r = ""
+        self.prefix_p = prefix_p or ""
+        self.prefix_r = prefix_r or ""
+        self.prefix = f"{self.prefix_p}{self.prefix_r}"
         self.sp = sp
         self.sp_rbv = sp_rbv
         self.act = act
@@ -366,11 +373,11 @@ def _analyze(
     }
 
     mechanical_result = None
-    if _mode_supports_mechanical(mode):
+    if mode in ("cst_velocity", "csv_position_tune"):
         mechanical_result = _fit_mechanical(t, vals_by_pv, cmd_key, resp_key, fs, mechanical)
     position_pid = None
     if mode == "csv_position_tune":
-        position_pid = _position_pid_from_settings(mechanical)
+        position_pid = _position_pid_from_bode(bode_payload, mechanical)
 
     return RunResult(
         t=np.asarray(t),
@@ -415,7 +422,7 @@ def _fit_mechanical(t, vals_by_pv, cmd_key, resp_key, fs, mechanical):
     return mechanical_result
 
 
-def _position_pid_from_settings(mechanical):
+def _position_pid_from_bode(bode_payload, mechanical):
     if mechanical is None:
         return None
     try:
@@ -427,17 +434,49 @@ def _position_pid_from_settings(mechanical):
         return None
     if not np.isfinite(zeta) or zeta <= 0.0:
         zeta = 1.0
+    freq = np.asarray(bode_payload.get("freq", np.array([])), float)
+    mag_db = np.asarray(bode_payload.get("mag_db", np.array([])), float)
+    mask = (freq > 0) & np.isfinite(freq) & np.isfinite(mag_db)
+    freq = freq[mask]
+    mag_db = mag_db[mask]
+    if freq.size == 0:
+        return _position_pid_from_targets(bw, zeta)
+    mag = 10.0 ** (mag_db / 20.0)
+    w = 2.0 * np.pi * freq
+    points = min(5, mag.size)
+    k_est = float(np.median(mag[:points] * w[:points]))
+    if not np.isfinite(k_est) or k_est <= 0.0:
+        return _position_pid_from_targets(bw, zeta)
+    wn = 2.0 * np.pi * bw
+    kp = (2.0 * zeta * wn) / k_est
+    ki = (wn * wn) / k_est
+    kd = 0.0
+    return {
+        "kp": float(max(kp, 0.0)),
+        "ki": float(max(ki, 0.0)),
+        "kd": float(max(kd, 0.0)),
+        "ti": (kp / ki) if ki > 1e-12 else float("inf"),
+        "target_bw_hz": bw,
+        "zeta": zeta,
+        "gain_from_bode": True,
+        "plant_gain": k_est,
+    }
+
+
+def _position_pid_from_targets(bw, zeta):
     wn = 2.0 * np.pi * bw
     kp = 2.0 * zeta * wn
     ki = wn * wn
     kd = 0.0
     return {
-        "kp": float(kp),
-        "ki": float(ki),
-        "kd": float(kd),
+        "kp": float(max(kp, 0.0)),
+        "ki": float(max(ki, 0.0)),
+        "kd": float(max(kd, 0.0)),
         "ti": (kp / ki) if ki > 1e-12 else float("inf"),
         "target_bw_hz": bw,
         "zeta": zeta,
+        "gain_from_bode": False,
+        "plant_gain": None,
     }
 
 
