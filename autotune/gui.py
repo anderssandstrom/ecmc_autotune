@@ -692,13 +692,17 @@ class AutotuneWindow(QtWidgets.QWidget):
         note.setWordWrap(True)
         layout.addWidget(note)
         layout.addWidget(QtWidgets.QLabel("Latest suggestions"))
-        self.pid_result_model = QtGui.QStandardItemModel(0, 5, widget)
+        self.pid_result_model = QtGui.QStandardItemModel(0, 9, widget)
         self.pid_result_model.setHorizontalHeaderLabels([
             "Mode",
             "Kp [unit/command]",
             "Ki [unit/command/s]",
             "Kd [unit/command·s]",
             "Ti [s]",
+            "J [N*m*s^2]",
+            "B [N*m*s/rad]",
+            "Tc [N*m]",
+            "Residual RMS [N*m]",
         ])
         self.pid_result_view = QtWidgets.QTableView()
         self.pid_result_view.setModel(self.pid_result_model)
@@ -1426,15 +1430,30 @@ class AutotuneWindow(QtWidgets.QWidget):
         ax_sig.legend()
         self.time_canvas.draw_idle()
 
-    def _append_pid_result(self, label, kp, ki, kd, ti=None):
+    def _append_pid_result(self, label, kp, ki, kd, ti=None, mechanical=None):
         if not hasattr(self, "pid_result_model") or self.pid_result_model is None:
             return
+        mechanical = mechanical or {}
+
+        def _fmt_mech(value):
+            try:
+                val = float(value)
+            except (TypeError, ValueError):
+                return ""
+            if not np.isfinite(val):
+                return ""
+            return f"{val:.4g}"
+
         items = [
             QtGui.QStandardItem(f"{label}"),
             QtGui.QStandardItem(f"{kp:.4g}"),
             QtGui.QStandardItem(f"{ki:.4g}"),
             QtGui.QStandardItem(f"{kd:.4g}"),
             QtGui.QStandardItem(f"{ti:.4g}" if ti is not None and np.isfinite(ti) else "∞"),
+            QtGui.QStandardItem(_fmt_mech(mechanical.get("J"))),
+            QtGui.QStandardItem(_fmt_mech(mechanical.get("B"))),
+            QtGui.QStandardItem(_fmt_mech(mechanical.get("Tc"))),
+            QtGui.QStandardItem(_fmt_mech(mechanical.get("residual_rms"))),
         ]
         for item in items:
             item.setEditable(False)
@@ -1460,7 +1479,7 @@ class AutotuneWindow(QtWidgets.QWidget):
                     f"Suggested PI: Kp={mech['kp']:.4g}, Ki={mech['ki']:.4g}, Ti={mech['ti']:.4g}"
                 )
                 print("[PID] appending velocity PI row", mech.get("kp"), mech.get("ki"), mech.get("ti"))
-                self._append_pid_result("Velocity PI", mech['kp'], mech['ki'], 0.0, mech.get('ti'))
+                self._append_pid_result("Velocity PI", mech['kp'], mech['ki'], 0.0, mech.get('ti'), mechanical=mech)
         if result.position_pid:
             pid = result.position_pid
             source = "bode fit" if pid.get("gain_from_bode") else "targets"

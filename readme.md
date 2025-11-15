@@ -63,7 +63,7 @@ The GUI uses the modules under `autotune/` (`pipeline.py`, `epics_logger.py`, `a
 ```python
 from autotune import pipeline
 
-pv = pipeline.PVSettings(prefix="c6025a-08:m1s000-", sp="Drv01-Trq", act="Drv01-VelAct")
+pv = pipeline.PVSettings(prefix_p="c6025a-08:", prefix_r="m1s000-", sp="Drv01-Trq", act="Drv01-VelAct")
 exc = pipeline.ExcitationSettings(...)
 analysis = pipeline.AnalysisSettings(...)
 mech = pipeline.MechanicalSettings(...)
@@ -74,4 +74,3 @@ result = pipeline.run_measurement(pv, exc, analysis, mech, log_filename="data.pk
 - The measurement sends commands directly to the drive SP PV; ensure the motor is free to move and safety interlocks are handled externally.
 - Setpoint value is restored after each run (even after an abort).
 - The GUI operates entirely client-side; no PV writes are performed until you approve the excitation preview.
-
