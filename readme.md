@@ -28,21 +28,36 @@ This repository contains the PyQt-based GUI and helper scripts for collecting st
 
 ## Using the GUI
 
+### Flow tab
+- Select the operating mode (CST velocity loop tuning, CSV closed-loop bode, CSV position loop tune, generic, or logger-only).
+- A flowchart illustrates the capture/analysis path and updates to match the chosen mode.
+- Inline text plus a “mode info” button summarize what each mode logs, how scaling is applied, and whether mechanical identification/PID suggestions are available.
+
 ### PV Settings tab
-- Set the common prefix or leave empty to use fully qualified PV names.
-- Configure the setpoint (`SP`), readback (`SP_RBV`), and the actual signal (`ACT`) used for bode fitting.
-- Use the suggestion list on the right to drag and drop common PV suffixes into the fields, or double-click to insert.
-- Additional PVs can be listed (one per line) in the "Extra log PVs" box; each entry will be logged for later analysis.
+- Configure the two-part PV prefix (`P` + `R`) or leave blank to use absolute PV names.
+- Set the command (`SP`), readback (`SP_RBV`), response (`ACT`), and any extra PVs to sample. Extra entries are logged for plotting and can be selected for the “Extra PVs” plots.
+- Specify the velocity scale, torque scale, and motor rated torque. Velocity scaling is applied to all speed-related PVs in the selected modes (command divided, response multiplied) to convert to physical rad/s. Torque scaling is CST-specific (command divided before writing, readback/actual multiplied when analyzing). Defaults of `1.0` let you work in native drive units.
 
 ### Excitation tab
-- Configure the stepped-sine sweep: sample rate, start/stop frequency, amplitude, and settle/measurement cycles.
-- Before a measurement starts you can review the generated excitation sequence in a preview dialog.
+- Configure the stepped-sine sweep: sampling rate, frequency span, amplitude, settle/measurement cycles, and transition rules.
+- A preview button displays the generated command and instantaneous frequency (dual y-axes) before you start a run.
 
 ### Analysis tab
-- Tune bode analysis parameters such as delay compensation, block length, frequency range, and required `R2` thresholds.
+- Adjust bode-processing settings (delay compensation, block length, frequency window, `R²` limits, etc.) across two columns for easier scanning.
+- The right-most “Mechanical*” group controls smoothing/derivative filters, velocity deadband, and target PI bandwidth/zeta. It is automatically greyed out when the active mode does not perform mechanical fitting.
 
-### Mechanical tab
-- Configure mechanical model fitting options and the target bandwidth / damping used for PI suggestions.
+### PID tab
+- Enter the target closed-loop bandwidth and damping used when generating velocity PI (CST) or position PID (CSV position tune) suggestions.
+- The results table now includes J, B, Tc, and residual RMS from the mechanical identification alongside the suggested Kp/Ki/Kd/Ti values. Use the **Clear results** button to reset the history.
+
+### PV / Signals tab
+- Choose which logged PVs populate the time-domain plots. Extra PVs (including identified segment boundaries and detected frequency tracks) can be graphed in separate windows without disturbing the embedded signal plot.
+
+### File tab
+- Manage log destinations independently of capture mode. The GUI stores every measurement—along with PV selections, excitation, analysis, and PID settings—in the `.pkl` metadata. Loading a log restores all tabs to the exact configuration that produced it.
+
+### Docs tab
+- Contains detailed descriptions of every mode at all times. The flow-tab info button opens the relevant excerpt in a pop-up for quick reference.
 
 ## Running a measurement
 1. Fill out the desired settings on all tabs.
@@ -53,10 +68,10 @@ This repository contains the PyQt-based GUI and helper scripts for collecting st
    - Inline Bode magnitude/phase plots (with a button to pop out a full window).
    - Command vs. actual time traces (also expandable).
    - Mechanical fit results and suggested PI gains in the log pane.
-4. Logs are saved to the path shown at the top; change it to store different runs.
+4. Logs (including metadata) are saved to the path shown on the File tab; change it to store different runs. Logger mode captures PVs without sending commands.
 
 ## Reanalyzing a log
-- Set the log path, adjust analysis/mechanical parameters as needed, and click **Reanalyze Log** to re-process existing `.pkl` files without repeating the excitation.
+- Set the log path, adjust analysis/mechanical/PID parameters as needed, and click **Reanalyze Log** to re-process existing `.pkl` files without repeating the excitation. The restored PV selections ensure reanalysis uses the same signals that were captured originally.
 
 ## Scripted usage
 The GUI uses the modules under `autotune/` (`pipeline.py`, `epics_logger.py`, `analyze.py`, etc.). You can import `autotune.pipeline` in your own scripts and call:
