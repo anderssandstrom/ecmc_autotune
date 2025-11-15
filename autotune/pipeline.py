@@ -272,14 +272,10 @@ def run_measurement(
         log_path.parent.mkdir(parents=True, exist_ok=True)
     meta = {
         "mode": mode,
-        "pv_settings": {
-            "prefix_p": getattr(pv, "prefix_p", ""),
-            "prefix_r": getattr(pv, "prefix_r", ""),
-            "sp": pv.sp,
-            "sp_rbv": pv.sp_rbv,
-            "act": pv.act,
-            "extra_logs": pv.extra_logs,
-        },
+        "pv_settings": _pv_settings_to_dict(pv),
+        "excitation": _excitation_to_dict(excitation),
+        "analysis": _analysis_to_dict(analysis),
+        "pid_targets": _pid_settings_to_dict(mechanical),
     }
     try:
         mylogger.metadata.update(meta)  # type: ignore[attr-defined]
@@ -476,6 +472,55 @@ def _fit_mechanical(t, vals_by_pv, cmd_key, resp_key, fs, mechanical):
     except Exception:
         mechanical_result = None
     return mechanical_result
+
+
+def _pv_settings_to_dict(pv):
+    return {
+        "prefix_p": getattr(pv, "prefix_p", ""),
+        "prefix_r": getattr(pv, "prefix_r", ""),
+        "sp": getattr(pv, "sp", ""),
+        "sp_rbv": getattr(pv, "sp_rbv", ""),
+        "act": getattr(pv, "act", ""),
+        "extra_logs": getattr(pv, "extra_logs", {}),
+    }
+
+
+def _excitation_to_dict(excitation):
+    return {
+        "fs": excitation.fs,
+        "f_start": excitation.f_start,
+        "f_stop": excitation.f_stop,
+        "n_points": excitation.n_points,
+        "amp": excitation.amp,
+        "n_settle": excitation.n_settle,
+        "n_meas": excitation.n_meas,
+        "transition_min_s": excitation.transition_min_s,
+        "transition_frac": excitation.transition_frac,
+        "edge_taper_cycles": excitation.edge_taper_cycles,
+    }
+
+
+def _analysis_to_dict(analysis):
+    return {
+        "tau_ms": analysis.tau_ms,
+        "block_len_s": analysis.block_len_s,
+        "overlap": analysis.overlap,
+        "fmin": analysis.fmin,
+        "fmax": analysis.fmax,
+        "freq_tolerance": analysis.freq_tolerance,
+        "settle_frac": analysis.settle_frac,
+        "r2_min": analysis.r2_min,
+        "sample_hz": analysis.sample_hz,
+    }
+
+
+def _pid_settings_to_dict(mechanical):
+    if mechanical is None:
+        return {}
+    return {
+        "pi_bandwidth": mechanical.pi_bandwidth,
+        "pi_zeta": mechanical.pi_zeta,
+    }
 
 
 def _position_pid_from_bode(bode_payload, mechanical):

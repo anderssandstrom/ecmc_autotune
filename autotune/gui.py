@@ -33,11 +33,21 @@ MODE_ORDER = [
     "generic",
     "logger",
 ]
+DEFAULT_FLOW_STEPS = [
+    ("PV Setup", "Define prefixes and PVs to log/control."),
+    ("Excitation", "Configure stepped-sine sweep."),
+    ("Acquire", "Drive the axis and capture PV data."),
+    ("Analyze", "Compute Bode/plant fits from the log."),
+    ("Suggest", "Derive PI/PID gains from analysis."),
+]
+
+
 MODE_DEFINITIONS = {
     pipeline.DEFAULT_MODE: {
         "label": "CST velocity loop tune",
         "description": "Command torque (Trq) and observe velocity (VelAct). Mechanical model fitting and PI suggestions are enabled.",
         "supports_mechanical": True,
+        "flow_steps": DEFAULT_FLOW_STEPS,
         "pv_defaults": {
             "prefix_p": "c6025a-08:",
             "prefix_r": "m1s000-",
@@ -74,6 +84,7 @@ MODE_DEFINITIONS = {
         "label": "CSV closed loop bode",
         "description": "Closed-loop velocity bode plot using speed demand (Spd) and velocity feedback (VelAct) in rad/s.",
         "supports_mechanical": False,
+        "flow_steps": DEFAULT_FLOW_STEPS,
         "pv_defaults": {
             "prefix_p": "c6025a-08:",
             "prefix_r": "m1s000-",
@@ -110,6 +121,13 @@ MODE_DEFINITIONS = {
         "label": "CSV position loop tune",
         "description": "Use speed demand (Spd), velocity readback (VelAct) as command feedback, and position response (PosAct).",
         "supports_mechanical": True,
+        "flow_steps": [
+            ("PV Setup", "Select speed, velocity, and position PVs."),
+            ("Excitation", "Configure the stepped-sine outer-loop drive."),
+            ("Acquire", "Drive the position loop while logging PVs."),
+            ("Analyze", "Bode + plant fit for the position loop."),
+            ("PID Suggest", "Compute position PID from bode fit."),
+        ],
         "pv_defaults": {
             "prefix_p": "c6025a-08:",
             "prefix_r": "m1s000-",
@@ -146,6 +164,7 @@ MODE_DEFINITIONS = {
         "label": "Generic mode",
         "description": "Fully manual configuration. Select and scale PVs as needed. Mechanical fitting is disabled.",
         "supports_mechanical": False,
+        "flow_steps": DEFAULT_FLOW_STEPS,
         "pv_defaults": {
             "prefix_p": "",
             "prefix_r": "",
@@ -183,6 +202,11 @@ MODE_DEFINITIONS = {
         "description": "Record PVs over time without applying stepped-sine excitation.",
         "supports_mechanical": False,
         "preserve_prefix": True,
+        "flow_steps": [
+            ("PV Setup", "Choose PVs to monitor; no commands are written."),
+            ("Log", "Start acquisition and record all selected PVs."),
+            ("Review", "Visualize signals or export logs."),
+        ],
         "pv_defaults": {
             "prefix_p": "",
             "prefix_r": "",
@@ -348,9 +372,11 @@ class AutotuneWindow(QtWidgets.QWidget):
         self.last_bode_data = None
         self.last_time_data = None
         self.last_extra_series = {}
+        self.derived_extra_series = {}
         self.last_analysis_settings = pipeline.AnalysisSettings()
         self.current_mode_key = pipeline.DEFAULT_MODE
         self._last_auto_values = {}
+        self.segment_overlay_cb = None
         self._build_ui()
 
     # -----------------------
@@ -366,23 +392,6 @@ class AutotuneWindow(QtWidgets.QWidget):
         settings_layout.setContentsMargins(0, 0, 0, 0)
         settings_layout.setSpacing(6)
 
-        mode_row = QtWidgets.QHBoxLayout()
-        mode_label = QtWidgets.QLabel("Mode")
-        self.mode_combo = QtWidgets.QComboBox()
-        for key in MODE_ORDER:
-            config = MODE_DEFINITIONS.get(key)
-            if not config:
-                continue
-            self.mode_combo.addItem(config["label"], key)
-        self._set_tooltip(self.mode_combo, "Select the measurement template. You can still edit PVs after choosing a mode.")
-        mode_row.addWidget(mode_label)
-        mode_row.addWidget(self.mode_combo, 1)
-        settings_layout.addLayout(mode_row)
-        self.mode_description = QtWidgets.QLabel("")
-        self.mode_description.setWordWrap(True)
-        self.mode_description.setStyleSheet("color: #555;")
-        settings_layout.addWidget(self.mode_description)
-
         self.tabs = QtWidgets.QTabWidget()
         self.tabs.setDocumentMode(True)
         self.tabs.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
@@ -394,23 +403,9 @@ class AutotuneWindow(QtWidgets.QWidget):
         self.mechanical_tab = self._build_mechanical_tab()
         self.tabs.addTab(self.mechanical_tab, "Mechanical")
         self.tabs.addTab(self._build_pid_tab(), "PID Tune")
+        self.tabs.addTab(self._build_file_tab(), "File")
+        self.tabs.addTab(self._build_docs_tab(), "Docs")
         settings_layout.addWidget(self.tabs)
-
-        log_path_row = QtWidgets.QHBoxLayout()
-        self.log_path_edit = QtWidgets.QLineEdit("autotune/logs/latest.pkl")
-        self.log_path_edit.setClearButtonEnabled(True)
-        self._set_tooltip(self.log_path_edit, "Destination for captured logs or the file to reopen for analysis.")
-        log_path_row.addWidget(QtWidgets.QLabel("Log file"))
-        log_path_row.addWidget(self.log_path_edit)
-        save_btn = QtWidgets.QPushButton("Browse Save…")
-        save_btn.clicked.connect(lambda: self._browse_log(True))
-        load_btn = QtWidgets.QPushButton("Browse Load…")
-        load_btn.clicked.connect(lambda: self._browse_log(False))
-        self._set_tooltip(save_btn, "Choose where to write the next acquisition log.")
-        self._set_tooltip(load_btn, "Pick an existing log to reanalyze.")
-        log_path_row.addWidget(save_btn)
-        log_path_row.addWidget(load_btn)
-        settings_layout.addLayout(log_path_row)
 
         button_row = QtWidgets.QHBoxLayout()
         self.measure_btn = QtWidgets.QPushButton("Run Measurement")
@@ -463,10 +458,17 @@ class AutotuneWindow(QtWidgets.QWidget):
         self.extra_pv_list.itemSelectionChanged.connect(self._refresh_time_plot)
         self._set_tooltip(self.extra_pv_list, "Select extra logged PVs to overlay on the time plot.")
         time_layout.addWidget(self.extra_pv_list)
-        self.time_popup_btn = QtWidgets.QPushButton("Open Window")
+        button_row = QtWidgets.QHBoxLayout()
+        self.time_popup_btn = QtWidgets.QPushButton("Open Signals Plot")
         self.time_popup_btn.clicked.connect(self._show_time_popup)
-        self._set_tooltip(self.time_popup_btn, "Pop out the captured time-domain signals into a separate window.")
-        time_layout.addWidget(self.time_popup_btn)
+        self._set_tooltip(self.time_popup_btn, "Pop out the primary command/response signals into a separate window.")
+        button_row.addWidget(self.time_popup_btn)
+        self.extra_popup_btn = QtWidgets.QPushButton("Open Selected PVs")
+        self.extra_popup_btn.clicked.connect(self._show_selected_pv_popup)
+        self._set_tooltip(self.extra_popup_btn, "Plot the currently selected extra PVs in a separate window.")
+        button_row.addWidget(self.extra_popup_btn)
+        button_row.addStretch(1)
+        time_layout.addLayout(button_row)
         self.time_group.setLayout(time_layout)
 
         plots_row.addWidget(self.bode_group, 1)
@@ -680,39 +682,95 @@ class AutotuneWindow(QtWidgets.QWidget):
         layout.addStretch(1)
         return widget
 
+    def _build_file_tab(self):
+        widget = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(widget)
+        path_row = QtWidgets.QHBoxLayout()
+        path_label = QtWidgets.QLabel("Log file")
+        self.log_path_edit = QtWidgets.QLineEdit("autotune/logs/latest.pkl")
+        self.log_path_edit.setClearButtonEnabled(True)
+        self._set_tooltip(self.log_path_edit, "Destination for captured logs or the file to reopen for analysis.")
+        path_row.addWidget(path_label)
+        path_row.addWidget(self.log_path_edit)
+        layout.addLayout(path_row)
+        button_row = QtWidgets.QHBoxLayout()
+        save_btn = QtWidgets.QPushButton("Browse Save…")
+        save_btn.clicked.connect(lambda: self._browse_log(True))
+        load_btn = QtWidgets.QPushButton("Browse Load…")
+        load_btn.clicked.connect(lambda: self._browse_log(False))
+        self._set_tooltip(save_btn, "Choose where to write the next acquisition log.")
+        self._set_tooltip(load_btn, "Pick an existing log to reanalyze and restore settings.")
+        button_row.addWidget(save_btn)
+        button_row.addWidget(load_btn)
+        button_row.addStretch(1)
+        layout.addLayout(button_row)
+        self.log_meta_label = QtWidgets.QLabel("No log loaded.")
+        self.log_meta_label.setWordWrap(True)
+        layout.addWidget(self.log_meta_label)
+        layout.addStretch(1)
+        return widget
+
+    def _build_docs_tab(self):
+        widget = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(widget)
+        layout.addWidget(QtWidgets.QLabel("Mode overview"))
+        self.docs_area = QtWidgets.QTextEdit()
+        self.docs_area.setReadOnly(True)
+        self.docs_area.setMinimumHeight(200)
+        layout.addWidget(self.docs_area, 1)
+        layout.addStretch(1)
+        self._update_docs_tab()
+        return widget
+
     def _build_flow_tab(self):
         widget = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(widget)
-        intro = QtWidgets.QLabel("Overview of the measurement / analysis flow. Follow the steps from left to right.")
+        mode_row = QtWidgets.QHBoxLayout()
+        mode_label = QtWidgets.QLabel("Mode")
+        self.mode_combo = QtWidgets.QComboBox()
+        for key in MODE_ORDER:
+            config = MODE_DEFINITIONS.get(key)
+            if not config:
+                continue
+            self.mode_combo.addItem(config["label"], key)
+        self._set_tooltip(self.mode_combo, "Select the measurement template. You can still edit PVs after choosing a mode.")
+        mode_row.addWidget(mode_label)
+        mode_row.addWidget(self.mode_combo, 1)
+        docs_btn = QtWidgets.QPushButton("Mode info")
+        docs_btn.setMaximumWidth(120)
+        docs_btn.clicked.connect(self._show_mode_info_popup)
+        mode_row.addWidget(docs_btn)
+        layout.addLayout(mode_row)
+        self.mode_description = QtWidgets.QLabel("")
+        self.mode_description.setWordWrap(True)
+        self.mode_description.setStyleSheet("color: #555;")
+        layout.addWidget(self.mode_description)
+        intro = QtWidgets.QLabel("Flow steps update based on the selected mode.")
         intro.setWordWrap(True)
         layout.addWidget(intro)
-        flow_layout = QtWidgets.QHBoxLayout()
-        layout.addLayout(flow_layout)
-        steps = [
-            ("PV Setup", "Define prefixes and select PVs to monitor/control."),
-            ("Excitation", "Configure stepped-sine or choose Logger mode."),
-            ("Acquire", "Run measurement or logging; data stored to log file."),
-            ("Analyze", "Bode analysis + plant fit; CSV logger skips if unavailable."),
-            ("Suggest", "Generate PI/PID suggestions when applicable."),
-        ]
-        for idx, (title, desc) in enumerate(steps):
-            card = QtWidgets.QGroupBox(title)
-            card_layout = QtWidgets.QVBoxLayout(card)
-            label = QtWidgets.QLabel(desc)
-            label.setWordWrap(True)
-            card_layout.addWidget(label)
-            flow_layout.addWidget(card, 1)
-            if idx < len(steps) - 1:
-                arrow = QtWidgets.QLabel("→")
-                arrow.setAlignment(QtCore.Qt.AlignCenter)
-                arrow.setFixedWidth(24)
-                flow_layout.addWidget(arrow)
-        flow_layout.addStretch(1)
-        hint = QtWidgets.QLabel("Mechanical identification and PID suggestion blocks are enabled per mode (see left tabs).")
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
+        self.flow_steps_layout = QtWidgets.QHBoxLayout()
+        layout.addLayout(self.flow_steps_layout)
         layout.addStretch(1)
         return widget
+
+    def _show_mode_info_popup(self):
+        mode_key = self.mode_combo.currentData()
+        config = MODE_DEFINITIONS.get(mode_key, {})
+        text = []
+        text.append(f"Mode: {config.get('label', mode_key)}")
+        if config.get("description"):
+            text.append(config["description"])
+        pv_defaults = config.get("pv_defaults", {})
+        text.append("")
+        text.append("PV defaults:")
+        for field in ("prefix_p", "prefix_r", "sp", "sp_rbv", "act"):
+            text.append(f"  {field}: {pv_defaults.get(field, '')}")
+        mechanics = config.get("supports_mechanical", False)
+        text.append(f"\nMechanical fit: {'enabled' if mechanics else 'disabled'}")
+        hint = config.get("mechanical_hint")
+        if hint:
+            text.append(hint)
+        QtWidgets.QMessageBox.information(self, "Mode info", "\n".join(text))
 
     def _line_edit(self, default):
         edit = PVLineEdit(default)
@@ -771,6 +829,8 @@ class AutotuneWindow(QtWidgets.QWidget):
             mech_hint = ""
         self.mechanical_hint_label.setText(mech_hint)
         self.mechanical_hint_label.setVisible(bool(mech_hint))
+        self._update_flow_diagram(config.get("flow_steps"))
+        self._update_docs_text(config)
 
     def _update_field_default(self, name, widget, value, force=False, preserve=False):
         if widget is None:
@@ -794,6 +854,57 @@ class AutotuneWindow(QtWidgets.QWidget):
         if pv_name and pv_name not in label:
             label = f"{label} ({pv_name})" if label else pv_name
         return label or (pv_name or "Signal")
+
+    def _update_flow_diagram(self, steps):
+        if not hasattr(self, "flow_steps_layout"):
+            return
+        layout = self.flow_steps_layout
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        steps = steps or DEFAULT_FLOW_STEPS
+        for idx, (title, desc) in enumerate(steps):
+            card = QtWidgets.QGroupBox(title)
+            card_layout = QtWidgets.QVBoxLayout(card)
+            label = QtWidgets.QLabel(desc)
+            label.setWordWrap(True)
+            card_layout.addWidget(label)
+            layout.addWidget(card, 1)
+            if idx < len(steps) - 1:
+                arrow = QtWidgets.QLabel("→")
+                arrow.setAlignment(QtCore.Qt.AlignCenter)
+                arrow.setFixedWidth(24)
+                layout.addWidget(arrow)
+        layout.addStretch(1)
+
+    def _update_docs_text(self, config):
+        self._update_docs_tab()
+
+    def _update_docs_tab(self):
+        if not hasattr(self, "docs_area") or self.docs_area is None:
+            return
+        lines = []
+        for key in MODE_ORDER:
+            info = MODE_DEFINITIONS.get(key)
+            if not info:
+                continue
+            lines.append(f"Mode: {info.get('label', key)}")
+            desc = info.get("description")
+            if desc:
+                lines.append(desc)
+            pv_defaults = info.get("pv_defaults", {})
+            lines.append("PV defaults:")
+            for field in ("prefix_p", "prefix_r", "sp", "sp_rbv", "act"):
+                lines.append(f"  {field}: {pv_defaults.get(field, '')}")
+            mechanics = info.get("supports_mechanical", False)
+            lines.append(f"Mechanical fit: {'enabled' if mechanics else 'disabled'}")
+            hint = info.get("mechanical_hint")
+            if hint:
+                lines.append(hint)
+            lines.append("")
+        self.docs_area.setText("\n".join(lines).strip())
 
     def _on_mode_changed(self, index):
         key = self.mode_combo.itemData(index)
@@ -826,7 +937,7 @@ class AutotuneWindow(QtWidgets.QWidget):
             QtWidgets.QMessageBox.critical(self, "Invalid excitation", str(exc))
             return
         try:
-            t, u, *_ = excite_sine.generate(
+            t, u, _, freq, _, _ = excite_sine.generate(
                 ex_cfg.fs,
                 ex_cfg.f_start,
                 ex_cfg.f_stop,
@@ -848,6 +959,10 @@ class AutotuneWindow(QtWidgets.QWidget):
         ax.set_ylabel("Command")
         ax.grid(True, linestyle="--", alpha=0.4)
         ax.set_title("Excitation preview")
+        if freq is not None:
+            ax2 = ax.twinx()
+            ax2.plot(t[: len(freq)], freq, "r--", alpha=0.6)
+            ax2.set_ylabel("Frequency [Hz]")
         fig.tight_layout()
         fig.show()
 
@@ -892,6 +1007,30 @@ class AutotuneWindow(QtWidgets.QWidget):
         settings = meta.get("pv_settings") if isinstance(meta, dict) else None
         if settings:
             self._restore_pv_settings_from_meta(settings)
+        summary = []
+        if isinstance(meta, dict):
+            mode = meta.get("mode")
+            if mode:
+                summary.append(f"Mode: {mode}")
+            if "excitation" in meta:
+                ex = meta["excitation"] or {}
+                summary.append(
+                    f"Excitation fs={ex.get('fs', '?')} Hz, range {ex.get('f_start', '?')}–{ex.get('f_stop', '?')} Hz"
+                )
+            if "analysis" in meta:
+                an = meta["analysis"] or {}
+                summary.append(
+                    f"Analysis block={an.get('block_len_s', '?')} s, overlap={an.get('overlap', '?')}"
+                )
+            if "pid_targets" in meta:
+                pid = meta["pid_targets"] or {}
+                summary.append(
+                    f"PID targets bw={pid.get('pi_bandwidth', '?')} Hz, zeta={pid.get('pi_zeta', '?')}"
+                )
+        if hasattr(self, "log_meta_label"):
+            text = f"Loaded {Path(path).name}\n" + ("\n".join(summary) if summary else "")
+            self.log_meta_label.setText(text.strip() or "No metadata available.")
+        self._update_docs_tab()
 
     def _restore_pv_settings_from_meta(self, settings):
         def set_line(widget, name, value):
@@ -1148,10 +1287,11 @@ class AutotuneWindow(QtWidgets.QWidget):
             if name not in (result.command_key, result.response_key)
         }
         self.last_extra_series = extras
-        self._update_extra_pv_list(extras)
+        self.derived_extra_series = self._build_derived_series(result)
+        self._update_extra_pv_list(extras, self.derived_extra_series)
         self._refresh_time_plot()
 
-    def _update_extra_pv_list(self, extras):
+    def _update_extra_pv_list(self, extras, derived=None):
         if self.extra_pv_list is None:
             return
         current = set(self._selected_extra_pvs())
@@ -1162,12 +1302,51 @@ class AutotuneWindow(QtWidgets.QWidget):
             if name in current:
                 item.setSelected(True)
             self.extra_pv_list.addItem(item)
+        if derived:
+            self.extra_pv_list.addItem("----------------")
+            for name in sorted(derived.keys()):
+                item = QtWidgets.QListWidgetItem(name)
+                if name in current:
+                    item.setSelected(True)
+                self.extra_pv_list.addItem(item)
         self.extra_pv_list.blockSignals(False)
 
     def _selected_extra_pvs(self):
         if self.extra_pv_list is None:
             return []
-        return [item.text() for item in self.extra_pv_list.selectedItems()]
+        return [item.text() for item in self.extra_pv_list.selectedItems() if item.text().strip("-")]
+
+    def _series_for_name(self, name):
+        if name in self.last_extra_series:
+            return self.last_extra_series.get(name)
+        if name in self.derived_extra_series:
+            return self.derived_extra_series.get(name)
+        return None
+
+    def _build_derived_series(self, result):
+        derived = {}
+        if result is None or result.t.size == 0:
+            return derived
+        t_len = len(result.t)
+        segments = getattr(result, "segments", None) or []
+        if segments:
+            mask = np.zeros(t_len, dtype=float)
+            freq = np.full(t_len, np.nan, dtype=float)
+            for seg in segments:
+                if not isinstance(seg, (list, tuple)) or len(seg) < 2:
+                    continue
+                start = max(int(seg[0]), 0)
+                end = min(int(seg[1]), t_len)
+                if end <= start:
+                    continue
+                mask[start:end] = 1.0
+                if len(seg) >= 3 and np.isfinite(seg[2]):
+                    freq[start:end] = float(seg[2])
+            if np.any(mask > 0):
+                derived["Segments mask"] = mask
+            if np.isfinite(freq).any():
+                derived["Segment freq [Hz]"] = freq
+        return derived
 
     def _refresh_time_plot(self):
         ax_sig = self.time_canvas.axes[0][0]
@@ -1187,11 +1366,18 @@ class AutotuneWindow(QtWidgets.QWidget):
             ax_sig.plot(t[: len(cmd)], cmd, label=cmd_label)
         if resp is not None:
             ax_sig.plot(t[: len(resp)], resp, label=resp_label)
-        for name in self._selected_extra_pvs():
-            series = self.last_extra_series.get(name)
-            if series is None:
-                continue
-            ax_sig.plot(t[: len(series)], series, label=name)
+        if (
+            self.segment_overlay_cb
+            and self.segment_overlay_cb.isChecked()
+            and self.latest_result
+            and getattr(self.latest_result, "segments", None)
+        ):
+            fs = 1.0 / float(self.last_analysis_settings.sample_hz or self.latest_result.t[1] - self.latest_result.t[0] or 1.0)
+            for seg in getattr(self.latest_result, "segments", []) or []:
+                if isinstance(seg, (list, tuple)) and len(seg) >= 2:
+                    start = seg[0] / fs
+                    end = seg[1] / fs
+                    ax_sig.axvspan(start, end, color="yellow", alpha=0.15)
         ax_sig.set_xlabel("Time [s]")
         ax_sig.set_ylabel(ylabel)
         ax_sig.grid(True, linestyle="--", alpha=0.4)
@@ -1290,6 +1476,38 @@ class AutotuneWindow(QtWidgets.QWidget):
         ax.grid(True, linestyle="--", alpha=0.4)
         ax.legend()
         ax.set_title("Command vs Response")
+        fig.tight_layout()
+        fig.show()
+
+    def _show_selected_pv_popup(self):
+        if not self.last_time_data:
+            QtWidgets.QMessageBox.information(self, "No data", "Run a measurement and select extra PVs to plot.")
+            return
+        selected = self._selected_extra_pvs()
+        if not selected:
+            QtWidgets.QMessageBox.information(self, "No selection", "Select one or more extra PVs from the list.")
+            return
+        t = self.last_time_data.get("t")
+        if t is None:
+            QtWidgets.QMessageBox.information(self, "No data", "No time base available to plot.")
+            return
+        fig, ax = plt.subplots(1, 1, figsize=(9, 4))
+        plotted = False
+        for name in selected:
+            series = self._series_for_name(name)
+            if series is None:
+                continue
+            ax.plot(t[: len(series)], series, label=name)
+            plotted = True
+        if not plotted:
+            QtWidgets.QMessageBox.information(self, "No data", "Selected PVs have no samples to plot.")
+            plt.close(fig)
+            return
+        ax.set_xlabel("Time [s]")
+        ax.set_ylabel("Selected PVs")
+        ax.grid(True, linestyle="--", alpha=0.4)
+        ax.legend()
+        ax.set_title("Extra PVs")
         fig.tight_layout()
         fig.show()
 
