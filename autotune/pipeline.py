@@ -1,4 +1,5 @@
 import time
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -17,6 +18,9 @@ VELOCITY_SCALE_TARGETS = {
     "cst_velocity": {"ACT", "VEL_ACT"},
     "csv_velocity_bode": {"SP", "SP_RBV", "ACT", "VEL_ACT"},
     "csv_position_tune": {"SP", "SP_RBV", "VEL_ACT"},
+}
+TORQUE_SCALE_TARGETS = {
+    "cst_velocity": {"SP", "SP_RBV", "TRQ_ACT"},
 }
 MEASUREMENT_MODES = {
     "cst_velocity": {"label": "CST velocity loop tuning", "supports_mechanical": True},
@@ -222,6 +226,7 @@ def run_measurement(
     _log(log_fn, f"Command length: {duration:.1f} s ({len(command)} samples)")
 
     command_scale = _command_scale_factor(mode, mechanical)
+    torque_scale = _torque_scale_factor(mechanical) if mechanical else 1.0
     mylogger = epics_logger.logger(Ts=1.0 / float(excitation.fs), pvs=pvs)
     _verify_pv_connections(mylogger, log_fn)
     sp_pv = mylogger.pvs.get("SP")
@@ -249,8 +254,8 @@ def run_measurement(
                 break
             if not log_only and sp_pv is not None:
                 cmd_val = float(value)
-                if command_scale not in (0.0, 1.0):
-                    cmd_val = cmd_val / command_scale
+                if mode == "cst_velocity" and abs(torque_scale - 1.0) > 1e-12:
+                    cmd_val = cmd_val / torque_scale
                 sp_pv.put(cmd_val, wait=False)
             t_next += dt
             if progress_fn:
@@ -279,6 +284,9 @@ def run_measurement(
         log_path = Path(log_filename)
         if log_path.suffix == "":
             log_path = log_path.with_suffix(".pkl")
+        if log_path.exists() or log_path.is_dir():
+            stamp = datetime.now().strftime("_%Y%m%d_%H%M%S")
+            log_path = log_path.with_name(log_path.stem + stamp + log_path.suffix)
         log_path.parent.mkdir(parents=True, exist_ok=True)
     meta = {
         "mode": mode,
@@ -346,6 +354,7 @@ def _analyze(
     mechanical,
     log_path,
     mode,
+    torque_scaled=False,
 ):
     mode = _normalize_mode(mode)
     cmd_key = "SP_RBV" if "SP_RBV" in vals_by_pv else ("SP" if "SP" in vals_by_pv else None)
@@ -398,7 +407,7 @@ def _analyze(
 
     mechanical_result = None
     if mode in ("cst_velocity", "csv_position_tune"):
-        mechanical_result = _fit_mechanical(t, vals_by_pv, cmd_key, resp_key, fs, mechanical)
+        mechanical_result = _fit_mechanical(t, vals_by_pv, cmd_key, resp_key, fs, mechanical, torque_scaled)
     position_pid = None
     if mode == "csv_position_tune":
         position_pid = _position_pid_from_bode(bode_payload, mechanical)
@@ -419,10 +428,13 @@ def _analyze(
 
 def _analyze_with_fallback(t, vals_by_pv, fs, analysis, mechanical, log_path, mode):
     mode = _normalize_mode(mode)
+    torque_scale = _torque_scale_factor(mechanical) if mechanical else 1.0
+    torque_scaled = mode == "cst_velocity" and abs(torque_scale - 1.0) > 1e-12
     arrays = {k: np.asarray(v) for k, v in vals_by_pv.items()}
+    arrays = _apply_torque_scale(arrays, torque_scale if torque_scaled else 1.0, mode)
     arrays = _apply_velocity_scale(arrays, getattr(mechanical, "velocity_scale", None) if mechanical else None, mode)
     try:
-        return _analyze(t, arrays, fs, analysis, mechanical, log_path, mode)
+        return _analyze(t, arrays, fs, analysis, mechanical, log_path, mode, torque_scaled=torque_scaled)
     except RuntimeError as exc:
         if mode != "logger":
             raise
@@ -457,16 +469,17 @@ def _basic_run_result(t, vals_by_pv, log_path, mode):
     )
 
 
-def _fit_mechanical(t, vals_by_pv, cmd_key, resp_key, fs, mechanical):
+def _fit_mechanical(t, vals_by_pv, cmd_key, resp_key, fs, mechanical, torque_scaled):
     mechanical_result = None
     trq_key = "TRQ_ACT" if "TRQ_ACT" in vals_by_pv else cmd_key
     try:
+        torque_scale = 1.0 if torque_scaled else mechanical.torque_multiplier()
         mechanical_result = analyze.fit_mechanical_model(
             t,
             vals_by_pv[trq_key],
             vals_by_pv[resp_key],
             fs=fs,
-            torque_scale=mechanical.torque_multiplier(),
+            torque_scale=torque_scale,
             vel_scale=mechanical.velocity_scale,
             smooth_hz=mechanical.smooth_hz,
             deriv_hz=mechanical.deriv_hz,
@@ -621,6 +634,37 @@ def _apply_velocity_scale(vals_by_pv, scale, mode):
             arr = arr * scale
         scaled[key] = arr
     return scaled
+
+
+def _apply_torque_scale(vals_by_pv, scale, mode):
+    try:
+        scale = float(scale)
+    except (TypeError, ValueError):
+        return vals_by_pv
+    if not np.isfinite(scale) or abs(scale - 1.0) < 1e-12:
+        return vals_by_pv
+    targets = TORQUE_SCALE_TARGETS.get(mode)
+    if not targets:
+        return vals_by_pv
+    scaled = {}
+    for key, values in vals_by_pv.items():
+        arr = np.asarray(values)
+        if key in targets:
+            arr = arr * scale
+        scaled[key] = arr
+    return scaled
+
+
+def _torque_scale_factor(mechanical):
+    if mechanical is None:
+        return 1.0
+    try:
+        scale = float(mechanical.torque_multiplier())
+    except Exception:
+        return 1.0
+    if not np.isfinite(scale) or scale == 0.0:
+        return 1.0
+    return scale
 
 
 def _infer_sample_rate(t):

@@ -54,6 +54,9 @@ MODE_DEFINITIONS = {
             "sp": "Drv01-Trq",
             "sp_rbv": "Drv01-TrqAct",
             "act": "Drv01-VelAct",
+            "motor_rated_trq": "1.0",
+            "torque_scale": "",
+            "velocity_scale": "1.0",
         },
         "pv_labels": {
             "prefix_p": "Prefix P",
@@ -91,6 +94,9 @@ MODE_DEFINITIONS = {
             "sp": "Drv01-Spd",
             "sp_rbv": "",
             "act": "Drv01-VelAct",
+            "motor_rated_trq": "1.0",
+            "torque_scale": "",
+            "velocity_scale": "1.0",
         },
         "pv_labels": {
             "prefix_p": "Prefix P",
@@ -134,6 +140,9 @@ MODE_DEFINITIONS = {
             "sp": "Drv01-Spd",
             "sp_rbv": "Drv01-VelAct",
             "act": "Enc01-PosAct",
+            "motor_rated_trq": "1.0",
+            "torque_scale": "",
+            "velocity_scale": "1.0",
         },
         "pv_labels": {
             "prefix_p": "Prefix P",
@@ -171,6 +180,9 @@ MODE_DEFINITIONS = {
             "sp": "",
             "sp_rbv": "",
             "act": "",
+            "motor_rated_trq": "1.0",
+            "torque_scale": "",
+            "velocity_scale": "1.0",
         },
         "pv_labels": {
             "prefix_p": "Prefix P",
@@ -213,6 +225,9 @@ MODE_DEFINITIONS = {
             "sp": "",
             "sp_rbv": "",
             "act": "",
+            "motor_rated_trq": "1.0",
+            "torque_scale": "",
+            "velocity_scale": "1.0",
         },
         "pv_labels": {
             "prefix_p": "Prefix P",
@@ -396,15 +411,23 @@ class AutotuneWindow(QtWidgets.QWidget):
         self.tabs.setDocumentMode(True)
         self.tabs.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
         self.tabs.setMaximumHeight(320)
-        self.tabs.addTab(self._build_flow_tab(), "Flow")
-        self.tabs.addTab(self._build_pv_tab(), "PV Settings")
-        self.tabs.addTab(self._build_excitation_tab(), "Excitation")
-        self.tabs.addTab(self._build_analysis_tab(), "Analysis")
-        self.mechanical_tab = self._build_mechanical_tab()
-        self.tabs.addTab(self.mechanical_tab, "Mechanical")
-        self.tabs.addTab(self._build_pid_tab(), "PID Tune")
-        self.tabs.addTab(self._build_file_tab(), "File")
-        self.tabs.addTab(self._build_docs_tab(), "Docs")
+        self.mechanical_hint_label = QtWidgets.QLabel("")
+        self.mechanical_hint_label.setWordWrap(True)
+        self.mechanical_hint_label.setStyleSheet("color: #a00;")
+        self.flow_tab = self._build_flow_tab()
+        self.pv_tab = self._build_pv_tab()
+        self.exc_tab = self._build_excitation_tab()
+        self.analysis_tab = self._build_analysis_tab()
+        self.pid_tab = self._build_pid_tab()
+        self.file_tab = self._build_file_tab()
+        self.docs_tab = self._build_docs_tab()
+        self.tabs.addTab(self.flow_tab, "Flow")
+        self.tabs.addTab(self.pv_tab, "PV Settings")
+        self.tabs.addTab(self.exc_tab, "Excitation")
+        self.tabs.addTab(self.analysis_tab, "Analysis")
+        self.tabs.addTab(self.pid_tab, "PID Tune")
+        self.tabs.addTab(self.file_tab, "File")
+        self.tabs.addTab(self.docs_tab, "Docs")
         settings_layout.addWidget(self.tabs)
 
         button_row = QtWidgets.QHBoxLayout()
@@ -497,6 +520,13 @@ class AutotuneWindow(QtWidgets.QWidget):
         self.pv_sp = self._line_edit("")
         self.pv_sp_rbv = self._line_edit("")
         self.pv_act = self._line_edit("")
+        self.pv_motor_torque = self._line_edit("1.0")
+        self._set_tooltip(self.pv_motor_torque, "Motor rated torque used for torque scaling (Nm).")
+        self.pv_torque_scale = self._line_edit("")
+        self.pv_torque_scale.setPlaceholderText("motor/100 if blank")
+        self._set_tooltip(self.pv_torque_scale, "Manual Nm-per-command scaling; defaults to rated torque / 100.")
+        self.pv_velocity_scale = self._line_edit("1.0")
+        self._set_tooltip(self.pv_velocity_scale, "Scaling factor to convert velocity PV units to physical units.")
         form_container_right = QtWidgets.QWidget()
         form_right = QtWidgets.QVBoxLayout(form_container_right)
         self.pv_extra = PVPlainTextEdit("")
@@ -512,13 +542,24 @@ class AutotuneWindow(QtWidgets.QWidget):
         form.addRow(self.pv_sp_label, self.pv_sp)
         form.addRow(self.pv_sp_rbv_label, self.pv_sp_rbv)
         form.addRow(self.pv_act_label, self.pv_act)
+        form.addRow("Motor rated torque [Nm]", self.pv_motor_torque)
+        form.addRow("Torque scale [Nm/unit]", self.pv_torque_scale)
+        form.addRow("Velocity scale", self.pv_velocity_scale)
         layout.addWidget(form_container, 2)
+        self.torque_fields = [
+            self.pv_motor_torque,
+            self.pv_torque_scale,
+        ]
+        self.velocity_fields = [self.pv_velocity_scale]
         self._pv_fields = {
             "prefix_p": self.pv_prefix_p,
             "prefix_r": self.pv_prefix_r,
             "sp": self.pv_sp,
             "sp_rbv": self.pv_sp_rbv,
             "act": self.pv_act,
+            "motor_rated_trq": self.pv_motor_torque,
+            "torque_scale": self.pv_torque_scale,
+            "velocity_scale": self.pv_velocity_scale,
         }
         suggestion_box = QtWidgets.QGroupBox("Available PVs")
         suggestion_layout = QtWidgets.QVBoxLayout(suggestion_box)
@@ -581,7 +622,9 @@ class AutotuneWindow(QtWidgets.QWidget):
 
     def _build_analysis_tab(self):
         widget = QtWidgets.QWidget()
-        form = QtWidgets.QFormLayout(widget)
+        layout = QtWidgets.QHBoxLayout(widget)
+        form_container = QtWidgets.QWidget()
+        grid = QtWidgets.QGridLayout(form_container)
         self.an_tau = self._line_edit("2.5")
         self._set_tooltip(self.an_tau, "Exponential smoothing constant for bode estimator in milliseconds.")
         self.an_block = self._line_edit("0.5")
@@ -601,44 +644,42 @@ class AutotuneWindow(QtWidgets.QWidget):
         self.an_fs = self._line_edit("")
         self.an_fs.setPlaceholderText("auto")
         self._set_tooltip(self.an_fs, "Override sampling rate for offline reanalysis; leave blank to infer from log.")
-        form.addRow("Tau [ms]", self.an_tau)
-        form.addRow("Block length [s]", self.an_block)
-        form.addRow("Overlap", self.an_overlap)
-        form.addRow("f min [Hz]", self.an_fmin)
-        form.addRow("f max [Hz]", self.an_fmax)
-        form.addRow("Freq tolerance", self.an_freq_tol)
-        form.addRow("Settle frac", self.an_settle)
-        form.addRow("R2 min", self.an_r2_min)
-        form.addRow("Sample rate [Hz]", self.an_fs)
-        return widget
-
-    def _build_mechanical_tab(self):
-        widget = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(widget)
-        form = QtWidgets.QFormLayout()
-        self.me_motor = self._line_edit("0.5")
-        self._set_tooltip(self.me_motor, "Motor rated torque used to derive the default torque scaling (Nm).")
-        self.me_torque_scale = self._line_edit("")
-        self.me_torque_scale.setPlaceholderText("motor/100 if blank")
-        self._set_tooltip(self.me_torque_scale, "Manual Nm-per-command scaling; defaults to rated torque / 100.")
-        self.me_vel_scale = self._line_edit("1.0")
-        self._set_tooltip(self.me_vel_scale, "Scaling factor to convert measured velocity units to physical units.")
+        labels = [
+            ("Tau [ms]", self.an_tau),
+            ("Block length [s]", self.an_block),
+            ("Overlap", self.an_overlap),
+            ("f min [Hz]", self.an_fmin),
+            ("f max [Hz]", self.an_fmax),
+            ("Freq tolerance", self.an_freq_tol),
+            ("Settle frac", self.an_settle),
+            ("R2 min", self.an_r2_min),
+            ("Sample rate [Hz]", self.an_fs),
+        ]
+        cols = 2
+        for idx, (label, widget_field) in enumerate(labels):
+            row = idx // cols
+            col = col_offset = col = idx % cols
+            row_pos = row
+            grid.addWidget(QtWidgets.QLabel(label), row_pos, col * 2)
+            grid.addWidget(widget_field, row_pos, col * 2 + 1)
+        layout.addWidget(form_container, 2)
+        self.mech_filter_group = QtWidgets.QGroupBox("Mechanical fitting filters")
+        mech_form = QtWidgets.QFormLayout(self.mech_filter_group)
         self.me_smooth = self._line_edit("150")
         self._set_tooltip(self.me_smooth, "Low-pass filter cutoff used before fitting the mechanical model.")
         self.me_deriv = self._line_edit("120")
         self._set_tooltip(self.me_deriv, "Cutoff for derivative filter when estimating velocity/acceleration.")
         self.me_deadband = self._line_edit("0.001")
         self._set_tooltip(self.me_deadband, "Deadband applied to small velocity values to reduce noise.")
-        form.addRow("Motor rated torque [Nm]", self.me_motor)
-        form.addRow("Torque scale [Nm/unit]", self.me_torque_scale)
-        form.addRow("Velocity scale", self.me_vel_scale)
-        form.addRow("Smooth cutoff [Hz]", self.me_smooth)
-        form.addRow("Derivative cutoff [Hz]", self.me_deriv)
-        form.addRow("Velocity deadband", self.me_deadband)
-        layout.addLayout(form)
-        self.mechanical_hint_label = QtWidgets.QLabel("")
-        self.mechanical_hint_label.setWordWrap(True)
-        self.mechanical_hint_label.setStyleSheet("color: #a00;")
+        mech_form.addRow("Smooth cutoff [Hz]", self.me_smooth)
+        mech_form.addRow("Derivative cutoff [Hz]", self.me_deriv)
+        mech_form.addRow("Velocity deadband", self.me_deadband)
+        layout.addWidget(self.mech_filter_group, 1)
+        return widget
+
+    def _build_mechanical_tab(self):
+        widget = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(widget)
         layout.addWidget(self.mechanical_hint_label)
         layout.addStretch(1)
         return widget
@@ -829,6 +870,15 @@ class AutotuneWindow(QtWidgets.QWidget):
             mech_hint = ""
         self.mechanical_hint_label.setText(mech_hint)
         self.mechanical_hint_label.setVisible(bool(mech_hint))
+        if hasattr(self, "mech_filter_group") and self.mech_filter_group is not None:
+            self.mech_filter_group.setEnabled(supports_mech)
+        torque_enabled = resolved_key == "cst_velocity"
+        for widget in getattr(self, "torque_fields", []):
+            widget.setEnabled(torque_enabled)
+        velocity_modes = {"cst_velocity", "csv_velocity_bode", "csv_position_tune"}
+        vel_enabled = resolved_key in velocity_modes
+        for widget in getattr(self, "velocity_fields", []):
+            widget.setEnabled(vel_enabled)
         self._update_flow_diagram(config.get("flow_steps"))
         self._update_docs_text(config)
 
@@ -1092,9 +1142,9 @@ class AutotuneWindow(QtWidgets.QWidget):
             sample_hz=self._optional_float(self.an_fs),
         )
         mech_cfg = pipeline.MechanicalSettings(
-            motor_rated_trq=self._float(self.me_motor, "Motor torque"),
-            torque_scale=self._optional_float(self.me_torque_scale),
-            velocity_scale=self._float(self.me_vel_scale, "Velocity scale"),
+            motor_rated_trq=self._optional_float(self.pv_motor_torque) or 0.5,
+            torque_scale=self._optional_float(self.pv_torque_scale),
+            velocity_scale=self._optional_float(self.pv_velocity_scale) or 1.0,
             smooth_hz=self._float(self.me_smooth, "Smooth cutoff"),
             deriv_hz=self._float(self.me_deriv, "Derivative cutoff"),
             vel_deadband=self._float(self.me_deadband, "Velocity deadband"),
