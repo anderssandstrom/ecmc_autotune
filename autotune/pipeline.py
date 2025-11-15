@@ -11,6 +11,15 @@ except ImportError:  # pragma: no cover - fallback for direct execution
     import excite_sine  # type: ignore
 
 
+DEFAULT_MODE = "cst_velocity"
+MEASUREMENT_MODES = {
+    "cst_velocity": {"label": "CST velocity loop tuning", "supports_mechanical": True},
+    "csv_velocity_bode": {"label": "CSV closed loop bode", "supports_mechanical": False},
+    "csv_position_tune": {"label": "CSV closed loop position tune", "supports_mechanical": False},
+    "generic": {"label": "Generic", "supports_mechanical": False},
+}
+
+
 class PVSettings(object):
     """Definition of the PVs used during excitation/logging."""
 
@@ -143,6 +152,7 @@ class RunResult(object):
         log_file=None,
         segments=None,
         mechanical=None,
+        mode=DEFAULT_MODE,
     ):
         self.t = np.asarray(t)
         self.values_by_pv = {k: np.asarray(v) for k, v in values_by_pv.items()}
@@ -152,6 +162,7 @@ class RunResult(object):
         self.log_file = log_file
         self.segments = segments
         self.mechanical = mechanical
+        self.mode = _normalize_mode(mode)
 
 
 def run_measurement(
@@ -163,7 +174,9 @@ def run_measurement(
     log_fn=None,
     progress_fn=None,
     should_abort=None,
+    mode=DEFAULT_MODE,
 ):
+    mode = _normalize_mode(mode)
     pvs = pv.to_pv_map()
     if "SP" not in pvs:
         raise ValueError("SP PV must be defined")
@@ -245,12 +258,12 @@ def run_measurement(
         if log_path.suffix == "":
             log_path = log_path.with_suffix(".pkl")
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        mylogger.save_log(str(log_path))
-        _log(log_fn, f"Log saved to {log_path}")
+    mylogger.save_log(str(log_path))
+    _log(log_fn, f"Log saved to {log_path}")
 
     _log(log_fn, "Running analysis on captured data…")
     t, vals_by_pv, *_ = mylogger.resample_to_common_time_base(fill="extrapolate", time_range="intersection")
-    result = _analyze(t, vals_by_pv, excitation.fs, analysis, mechanical, log_path)
+    result = _analyze(t, vals_by_pv, excitation.fs, analysis, mechanical, log_path, mode)
     if log_path is None:
         return result
     return RunResult(
@@ -262,6 +275,7 @@ def run_measurement(
         log_file=str(log_path),
         segments=result.segments,
         mechanical=result.mechanical,
+        mode=mode,
     )
 
 
@@ -270,7 +284,9 @@ def reanalyze_log(
     analysis,
     mechanical,
     log_fn=None,
+    mode=DEFAULT_MODE,
 ):
+    mode = _normalize_mode(mode)
     if not log_filename:
         raise ValueError("Log file must be provided for reanalysis")
     log_path = Path(log_filename)
@@ -285,7 +301,7 @@ def reanalyze_log(
     t, vals_by_pv, *_ = mylogger.resample_to_common_time_base(fill="extrapolate", time_range="intersection")
     fs = analysis.sample_hz or _infer_sample_rate(t)
     _log(log_fn, f"Using sample frequency {fs:.2f} Hz for analysis")
-    return _analyze(t, vals_by_pv, fs, analysis, mechanical, log_path)
+    return _analyze(t, vals_by_pv, fs, analysis, mechanical, log_path, mode)
 
 
 def _analyze(
@@ -295,7 +311,9 @@ def _analyze(
     analysis,
     mechanical,
     log_path,
+    mode,
 ):
+    mode = _normalize_mode(mode)
     cmd_key = "SP_RBV" if "SP_RBV" in vals_by_pv else ("SP" if "SP" in vals_by_pv else None)
     resp_key = None
     for candidate in ("ACT", "VEL_ACT", "POS_ACT", "TRQ_ACT"):
@@ -335,6 +353,33 @@ def _analyze(
     )
     segments = bode_obj.getSegments()
 
+    bode_payload = {
+        "freq": bode_results.get("F", np.array([])),
+        "mag_db": bode_results.get("mag_db", np.array([])),
+        "phase": bode_results.get("phase_deg", np.array([])),
+        "phase_comp": bode_results.get("phase_comp_deg", np.array([])),
+        "r2_u": bode_results.get("R2_u", np.array([])),
+        "r2_y": bode_results.get("R2_y", np.array([])),
+    }
+
+    mechanical_result = None
+    if _mode_supports_mechanical(mode):
+        mechanical_result = _fit_mechanical(t, vals_by_pv, cmd_key, resp_key, fs, mechanical)
+
+    return RunResult(
+        t=np.asarray(t),
+        values_by_pv={k: np.asarray(v) for k, v in vals_by_pv.items()},
+        bode=bode_payload,
+        command_key=cmd_key,
+        response_key=resp_key,
+        log_file=str(log_path) if log_path else None,
+        segments=segments,
+        mechanical=mechanical_result,
+        mode=mode,
+    )
+
+
+def _fit_mechanical(t, vals_by_pv, cmd_key, resp_key, fs, mechanical):
     mechanical_result = None
     trq_key = "TRQ_ACT" if "TRQ_ACT" in vals_by_pv else cmd_key
     try:
@@ -360,26 +405,7 @@ def _analyze(
         mechanical_result["ti"] = (kp / ki) if ki > 1e-12 else float("inf")
     except Exception:
         mechanical_result = None
-
-    bode_payload = {
-        "freq": bode_results.get("F", np.array([])),
-        "mag_db": bode_results.get("mag_db", np.array([])),
-        "phase": bode_results.get("phase_deg", np.array([])),
-        "phase_comp": bode_results.get("phase_comp_deg", np.array([])),
-        "r2_u": bode_results.get("R2_u", np.array([])),
-        "r2_y": bode_results.get("R2_y", np.array([])),
-    }
-
-    return RunResult(
-        t=np.asarray(t),
-        values_by_pv={k: np.asarray(v) for k, v in vals_by_pv.items()},
-        bode=bode_payload,
-        command_key=cmd_key,
-        response_key=resp_key,
-        log_file=str(log_path) if log_path else None,
-        segments=segments,
-        mechanical=mechanical_result,
-    )
+    return mechanical_result
 
 
 def _infer_sample_rate(t):
@@ -410,3 +436,30 @@ def _verify_pv_connections(mylogger, log_fn, timeout=2.0):
     if missing:
         raise RuntimeError("Failed to connect to PVs: %s" % ", ".join(sorted(missing)))
     _log(log_fn, "PV connectivity check passed.")
+
+
+def available_modes():
+    return dict(MEASUREMENT_MODES)
+
+
+def mode_supports_mechanical(mode):
+    return _mode_supports_mechanical(_normalize_mode(mode))
+
+
+def _normalize_mode(mode):
+    if isinstance(mode, str):
+        key = mode.strip().lower()
+    else:
+        key = getattr(mode, "value", None)
+        if key is None and mode is not None:
+            key = str(mode).strip().lower()
+    if key in MEASUREMENT_MODES:
+        return key
+    return DEFAULT_MODE if key is None else "generic"
+
+
+def _mode_supports_mechanical(mode):
+    info = MEASUREMENT_MODES.get(mode)
+    if not info:
+        return False
+    return bool(info.get("supports_mechanical"))

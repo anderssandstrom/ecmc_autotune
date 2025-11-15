@@ -24,6 +24,139 @@ PV_SUGGESTIONS = [
     "Drv01-Spd-RB",
 ]
 
+MODE_ORDER = [
+    pipeline.DEFAULT_MODE,
+    "csv_velocity_bode",
+    "csv_position_tune",
+    "generic",
+]
+MODE_DEFINITIONS = {
+    pipeline.DEFAULT_MODE: {
+        "label": "CST velocity loop tuning",
+        "description": "Command torque (Trq) and observe velocity (VelAct). Mechanical model fitting and PI suggestions are enabled.",
+        "supports_mechanical": True,
+        "pv_defaults": {
+            "prefix": "c6025a-08:m1s000-",
+            "sp": "Drv01-Trq",
+            "sp_rbv": "Drv01-TrqAct",
+            "act": "Drv01-VelAct",
+        },
+        "pv_labels": {
+            "sp": "Torque command PV (SP) [%]",
+            "sp_rbv": "Torque readback PV (SP_RBV) [%]",
+            "act": "Velocity response PV (ACT)",
+            "extra": "Extra log PVs",
+        },
+        "pv_tooltips": {
+            "sp": "EPICS PV that accepts the torque demand (e.g. Drv01-Trq). Values interpreted as percent torque before scaling.",
+            "sp_rbv": "Readback of the commanded torque (e.g. Drv01-TrqAct). Used as the command trace for analysis.",
+            "act": "Measured velocity feedback PV (e.g. Drv01-VelAct).",
+            "extra": "Optional extra PVs to log (NAME=PV or PV). One per line.",
+        },
+        "time_plot": {
+            "command_label": "Torque command",
+            "command_units": "%",
+            "response_label": "Velocity feedback",
+            "response_units": "user units",
+            "ylabel": "Torque [%] / Velocity",
+        },
+        "mechanical_hint": "",
+    },
+    "csv_velocity_bode": {
+        "label": "CSV closed loop bode",
+        "description": "Closed-loop velocity bode plot using speed demand (Spd) and velocity feedback (VelAct) in rad/s.",
+        "supports_mechanical": False,
+        "pv_defaults": {
+            "prefix": "c6025a-08:m1s000-",
+            "sp": "Drv01-Spd",
+            "sp_rbv": "",
+            "act": "Drv01-VelAct",
+        },
+        "pv_labels": {
+            "sp": "Speed command PV (SP) [rad/s]",
+            "sp_rbv": "Speed readback PV (optional)",
+            "act": "Velocity response PV (ACT) [rad/s]",
+            "extra": "Extra log PVs",
+        },
+        "pv_tooltips": {
+            "sp": "Speed demand PV to drive during the bode sweep (e.g. Drv01-Spd).",
+            "sp_rbv": "Optional readback PV for the commanded speed. Leave blank to use SP.",
+            "act": "Velocity feedback PV (VelAct) expressed in rad/s.",
+            "extra": "Optional extra PVs to log (NAME=PV or PV). One per line.",
+        },
+        "time_plot": {
+            "command_label": "Speed command",
+            "command_units": "rad/s",
+            "response_label": "Velocity feedback",
+            "response_units": "rad/s",
+            "ylabel": "Speed [rad/s]",
+        },
+        "mechanical_hint": "Mechanical identification is disabled in CSV bode mode.",
+    },
+    "csv_position_tune": {
+        "label": "CSV closed loop position loop tune",
+        "description": "Use speed demand (Spd), velocity readback (VelAct) as command feedback, and position response (PosAct).",
+        "supports_mechanical": False,
+        "pv_defaults": {
+            "prefix": "c6025a-08:m1s000-",
+            "sp": "Drv01-Spd",
+            "sp_rbv": "Drv01-VelAct",
+            "act": "Enc01-PosAct",
+        },
+        "pv_labels": {
+            "sp": "Speed command PV (SP) [rad/s]",
+            "sp_rbv": "Velocity inner-loop PV (SP_RBV) [rad/s]",
+            "act": "Position response PV (ACT)",
+            "extra": "Extra log PVs",
+        },
+        "pv_tooltips": {
+            "sp": "Outer-loop speed demand PV (Spd) to excite the position loop.",
+            "sp_rbv": "Velocity feedback PV (VelAct) used as the command trace.",
+            "act": "Position feedback PV (PosAct) used as the response.",
+            "extra": "Optional extra PVs to log (NAME=PV or PV). One per line.",
+        },
+        "time_plot": {
+            "command_label": "Speed command",
+            "command_units": "rad/s",
+            "response_label": "Position feedback",
+            "response_units": "user units",
+            "ylabel": "Speed / Position",
+        },
+        "mechanical_hint": "Mechanical identification is disabled in CSV position tuning mode.",
+    },
+    "generic": {
+        "label": "Generic mode",
+        "description": "Fully manual configuration. Select and scale PVs as needed. Mechanical fitting is disabled.",
+        "supports_mechanical": False,
+        "pv_defaults": {
+            "prefix": "c6025a-08:m1s000-",
+            "sp": "",
+            "sp_rbv": "",
+            "act": "",
+        },
+        "pv_labels": {
+            "sp": "Command PV (SP)",
+            "sp_rbv": "Command readback PV (SP_RBV)",
+            "act": "Response PV (ACT)",
+            "extra": "Extra log PVs",
+        },
+        "pv_tooltips": {
+            "sp": "EPICS PV to write during the excitation.",
+            "sp_rbv": "Optional readback PV for the commanded signal.",
+            "act": "Measured response PV used for analysis.",
+            "extra": "Optional extra PVs to log (NAME=PV or PV). One per line.",
+        },
+        "time_plot": {
+            "command_label": "Command",
+            "command_units": "",
+            "response_label": "Response",
+            "response_units": "",
+            "ylabel": "Command / Response",
+        },
+        "mechanical_hint": "Mechanical identification is disabled in generic mode.",
+    },
+}
+
 
 class Worker(QtCore.QObject):
     finished = QtCore.pyqtSignal(object)
@@ -155,6 +288,8 @@ class AutotuneWindow(QtWidgets.QWidget):
         self.last_bode_data = None
         self.last_time_data = None
         self.last_analysis_settings = pipeline.AnalysisSettings()
+        self.current_mode_key = pipeline.DEFAULT_MODE
+        self._last_auto_values = {}
         self._build_ui()
 
     # -----------------------
@@ -163,12 +298,40 @@ class AutotuneWindow(QtWidgets.QWidget):
     def _build_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
 
-        tabs = QtWidgets.QTabWidget()
-        tabs.addTab(self._build_pv_tab(), "PV Settings")
-        tabs.addTab(self._build_excitation_tab(), "Excitation")
-        tabs.addTab(self._build_analysis_tab(), "Analysis")
-        tabs.addTab(self._build_mechanical_tab(), "Mechanical")
-        layout.addWidget(tabs)
+        settings_widget = QtWidgets.QWidget()
+        settings_widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Maximum)
+        settings_widget.setMaximumHeight(420)
+        settings_layout = QtWidgets.QVBoxLayout(settings_widget)
+        settings_layout.setContentsMargins(0, 0, 0, 0)
+        settings_layout.setSpacing(6)
+
+        mode_row = QtWidgets.QHBoxLayout()
+        mode_label = QtWidgets.QLabel("Mode")
+        self.mode_combo = QtWidgets.QComboBox()
+        for key in MODE_ORDER:
+            config = MODE_DEFINITIONS.get(key)
+            if not config:
+                continue
+            self.mode_combo.addItem(config["label"], key)
+        self._set_tooltip(self.mode_combo, "Select the measurement template. You can still edit PVs after choosing a mode.")
+        mode_row.addWidget(mode_label)
+        mode_row.addWidget(self.mode_combo, 1)
+        settings_layout.addLayout(mode_row)
+        self.mode_description = QtWidgets.QLabel("")
+        self.mode_description.setWordWrap(True)
+        self.mode_description.setStyleSheet("color: #555;")
+        settings_layout.addWidget(self.mode_description)
+
+        self.tabs = QtWidgets.QTabWidget()
+        self.tabs.setDocumentMode(True)
+        self.tabs.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
+        self.tabs.setMaximumHeight(320)
+        self.tabs.addTab(self._build_pv_tab(), "PV Settings")
+        self.tabs.addTab(self._build_excitation_tab(), "Excitation")
+        self.tabs.addTab(self._build_analysis_tab(), "Analysis")
+        self.mechanical_tab = self._build_mechanical_tab()
+        self.tabs.addTab(self.mechanical_tab, "Mechanical")
+        settings_layout.addWidget(self.tabs)
 
         log_path_row = QtWidgets.QHBoxLayout()
         self.log_path_edit = QtWidgets.QLineEdit("autotune/logs/latest.pkl")
@@ -184,7 +347,7 @@ class AutotuneWindow(QtWidgets.QWidget):
         self._set_tooltip(load_btn, "Pick an existing log to reanalyze.")
         log_path_row.addWidget(save_btn)
         log_path_row.addWidget(load_btn)
-        layout.addLayout(log_path_row)
+        settings_layout.addLayout(log_path_row)
 
         button_row = QtWidgets.QHBoxLayout()
         self.measure_btn = QtWidgets.QPushButton("Run Measurement")
@@ -201,12 +364,18 @@ class AutotuneWindow(QtWidgets.QWidget):
         self._set_tooltip(self.abort_btn, "Stop the active measurement or analysis as soon as possible.")
         button_row.addWidget(self.abort_btn)
         button_row.addStretch(1)
-        layout.addLayout(button_row)
+        settings_layout.addLayout(button_row)
 
         self.progress_bar = QtWidgets.QProgressBar()
         self.progress_bar.setRange(0, 100)
         self._set_tooltip(self.progress_bar, "Shows completion of the running measurement or analysis step.")
-        layout.addWidget(self.progress_bar)
+        settings_layout.addWidget(self.progress_bar)
+        layout.addWidget(settings_widget, 0)
+
+        results_widget = QtWidgets.QWidget()
+        results_layout = QtWidgets.QVBoxLayout(results_widget)
+        results_layout.setContentsMargins(0, 0, 0, 0)
+        results_layout.setSpacing(6)
 
         plots_row = QtWidgets.QHBoxLayout()
         self.bode_group = QtWidgets.QGroupBox("Bode")
@@ -231,33 +400,46 @@ class AutotuneWindow(QtWidgets.QWidget):
 
         plots_row.addWidget(self.bode_group, 1)
         plots_row.addWidget(self.time_group, 1)
-        layout.addLayout(plots_row, 1)
+        results_layout.addLayout(plots_row, 1)
 
         self.log_output = QtWidgets.QPlainTextEdit()
         self.log_output.setReadOnly(True)
-        layout.addWidget(self.log_output, 1)
+        results_layout.addWidget(self.log_output, 1)
+
+        layout.addWidget(results_widget, 1)
+
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+        initial_mode = self.mode_combo.currentData()
+        self._apply_mode_settings(initial_mode, force_defaults=True)
 
     def _build_pv_tab(self):
         widget = QtWidgets.QWidget()
         layout = QtWidgets.QHBoxLayout(widget)
         form_container = QtWidgets.QWidget()
         form = QtWidgets.QFormLayout(form_container)
-        self.pv_prefix = self._line_edit("c6025a-08:m1s000-")
+        self.pv_prefix = self._line_edit("")
         self._set_tooltip(self.pv_prefix, "Prefix prepended to PV names when they do not include a full record (leave blank for absolute PVs).")
-        self.pv_sp = self._line_edit("Drv01-Trq")
-        self._set_tooltip(self.pv_sp, "Command PV written during excitation (e.g. torque setpoint).")
-        self.pv_sp_rbv = self._line_edit("Drv01-TrqAct")
-        self._set_tooltip(self.pv_sp_rbv, "Optional readback PV for the command; falls back to SP when blank.")
-        self.pv_act = self._line_edit("Drv01-VelAct")
-        self._set_tooltip(self.pv_act, "Measured plant response PV, typically velocity.")
+        self.pv_sp = self._line_edit("")
+        self.pv_sp_rbv = self._line_edit("")
+        self.pv_act = self._line_edit("")
         self.pv_extra = PVPlainTextEdit("")
         self.pv_extra.setPlaceholderText("One PV per line (optional NAME=PV). Empty line removes logging.")
-        self._set_tooltip(self.pv_extra, "Add extra PVs to log during excitation. Enter NAME=PV pairs or raw PV names, one per line.")
-        form.addRow("Prefix", self.pv_prefix)
-        form.addRow("SP", self.pv_sp)
-        form.addRow("SP_RBV", self.pv_sp_rbv)
-        form.addRow("ACT PV", self.pv_act)
-        form.addRow("Extra log PVs", self.pv_extra)
+        self.pv_prefix_label = QtWidgets.QLabel("Prefix")
+        self.pv_sp_label = QtWidgets.QLabel("SP")
+        self.pv_sp_rbv_label = QtWidgets.QLabel("SP_RBV")
+        self.pv_act_label = QtWidgets.QLabel("ACT PV")
+        self.pv_extra_label = QtWidgets.QLabel("Extra log PVs")
+        form.addRow(self.pv_prefix_label, self.pv_prefix)
+        form.addRow(self.pv_sp_label, self.pv_sp)
+        form.addRow(self.pv_sp_rbv_label, self.pv_sp_rbv)
+        form.addRow(self.pv_act_label, self.pv_act)
+        form.addRow(self.pv_extra_label, self.pv_extra)
+        self._pv_fields = {
+            "prefix": self.pv_prefix,
+            "sp": self.pv_sp,
+            "sp_rbv": self.pv_sp_rbv,
+            "act": self.pv_act,
+        }
         layout.addWidget(form_container, 2)
 
         suggestion_box = QtWidgets.QGroupBox("Available PVs")
@@ -342,7 +524,8 @@ class AutotuneWindow(QtWidgets.QWidget):
 
     def _build_mechanical_tab(self):
         widget = QtWidgets.QWidget()
-        form = QtWidgets.QFormLayout(widget)
+        layout = QtWidgets.QVBoxLayout(widget)
+        form = QtWidgets.QFormLayout()
         self.me_motor = self._line_edit("0.5")
         self._set_tooltip(self.me_motor, "Motor rated torque used to derive the default torque scaling (Nm).")
         self.me_torque_scale = self._line_edit("")
@@ -368,6 +551,12 @@ class AutotuneWindow(QtWidgets.QWidget):
         form.addRow("Velocity deadband", self.me_deadband)
         form.addRow("PI bandwidth [Hz]", self.me_pi_bw)
         form.addRow("PI zeta", self.me_pi_zeta)
+        layout.addLayout(form)
+        self.mechanical_hint_label = QtWidgets.QLabel("")
+        self.mechanical_hint_label.setWordWrap(True)
+        self.mechanical_hint_label.setStyleSheet("color: #a00;")
+        layout.addWidget(self.mechanical_hint_label)
+        layout.addStretch(1)
         return widget
 
     def _line_edit(self, default):
@@ -379,6 +568,74 @@ class AutotuneWindow(QtWidgets.QWidget):
         if widget is not None:
             widget.setToolTip(text.strip())
         return widget
+
+    def _mode_config(self, key=None):
+        key = key or self.current_mode_key or pipeline.DEFAULT_MODE
+        return MODE_DEFINITIONS.get(key, MODE_DEFINITIONS[pipeline.DEFAULT_MODE])
+
+    def _apply_mode_settings(self, key, force_defaults=False):
+        resolved_key = key if key in MODE_DEFINITIONS else pipeline.DEFAULT_MODE
+        config = self._mode_config(resolved_key)
+        self.current_mode_key = resolved_key
+        label = config.get("label", "Mode")
+        desc = config.get("description", "")
+        self.mode_description.setText(f"{label}: {desc}")
+        pv_labels = config.get("pv_labels", {})
+        self.pv_sp_label.setText(pv_labels.get("sp", "SP"))
+        self.pv_sp_rbv_label.setText(pv_labels.get("sp_rbv", "SP_RBV"))
+        self.pv_act_label.setText(pv_labels.get("act", "ACT PV"))
+        self.pv_extra_label.setText(pv_labels.get("extra", "Extra log PVs"))
+
+        pv_tooltips = config.get("pv_tooltips", {})
+        self._set_tooltip(self.pv_sp, pv_tooltips.get("sp", self.pv_sp.toolTip() or ""))
+        self._set_tooltip(self.pv_sp_rbv, pv_tooltips.get("sp_rbv", self.pv_sp_rbv.toolTip() or ""))
+        self._set_tooltip(self.pv_act, pv_tooltips.get("act", self.pv_act.toolTip() or ""))
+        self._set_tooltip(self.pv_extra, pv_tooltips.get("extra", self.pv_extra.toolTip() or ""))
+
+        defaults = config.get("pv_defaults", {})
+        for field_name, widget in getattr(self, "_pv_fields", {}).items():
+            self._update_field_default(field_name, widget, defaults.get(field_name, ""), force_defaults)
+
+        self._set_tooltip(
+            self.measure_btn,
+            f"Run {label} using the current excitation and analysis settings.",
+        )
+        self._set_tooltip(
+            self.reanalyze_btn,
+            f"Reprocess a saved log using the {label} signal mapping.",
+        )
+
+        mech_hint = config.get("mechanical_hint", "")
+        supports_mech = bool(config.get("supports_mechanical"))
+        if supports_mech and not mech_hint:
+            mech_hint = ""
+        self.mechanical_hint_label.setText(mech_hint)
+        self.mechanical_hint_label.setVisible(bool(mech_hint))
+
+    def _update_field_default(self, name, widget, value, force=False):
+        if widget is None:
+            return
+        value = value or ""
+        current = widget.text().strip() if isinstance(widget, QtWidgets.QLineEdit) else widget.toPlainText().strip()
+        last_auto = self._last_auto_values.get(name)
+        if force or not current or (last_auto is not None and current == last_auto):
+            if isinstance(widget, QtWidgets.QLineEdit):
+                widget.setText(value)
+            else:
+                widget.setPlainText(value)
+            self._last_auto_values[name] = value
+
+    def _format_signal_label(self, base, units, pv_name):
+        label = base or pv_name or ""
+        if units:
+            label = f"{label} [{units}]" if label else f"[{units}]"
+        if pv_name and pv_name not in label:
+            label = f"{label} ({pv_name})" if label else pv_name
+        return label or (pv_name or "Signal")
+
+    def _on_mode_changed(self, index):
+        key = self.mode_combo.itemData(index)
+        self._apply_mode_settings(key)
 
     # -----------------------
     # Actions
@@ -394,7 +651,11 @@ class AutotuneWindow(QtWidgets.QWidget):
             return
         log_path = self.log_path_edit.text().strip()
         self.last_analysis_settings = an_cfg
-        self._run_worker("measure", dict(pv=pv_cfg, excitation=ex_cfg, analysis=an_cfg, mechanical=mech_cfg, log_filename=log_path))
+        mode_key = self.current_mode_key or pipeline.DEFAULT_MODE
+        self._run_worker(
+            "measure",
+            dict(pv=pv_cfg, excitation=ex_cfg, analysis=an_cfg, mechanical=mech_cfg, log_filename=log_path, mode=mode_key),
+        )
 
     def _start_reanalysis(self):
         try:
@@ -407,7 +668,8 @@ class AutotuneWindow(QtWidgets.QWidget):
             QtWidgets.QMessageBox.warning(self, "Missing log", "Select a log file to reanalyze.")
             return
         self.last_analysis_settings = an_cfg
-        self._run_worker("reanalyze", dict(log_filename=log_path, analysis=an_cfg, mechanical=mech_cfg))
+        mode_key = self.current_mode_key or pipeline.DEFAULT_MODE
+        self._run_worker("reanalyze", dict(log_filename=log_path, analysis=an_cfg, mechanical=mech_cfg, mode=mode_key))
 
     def _browse_log(self, save):
         initial = self.log_path_edit.text().strip() or os.path.join(os.getcwd(), "autotune_log.pkl")
@@ -621,6 +883,12 @@ class AutotuneWindow(QtWidgets.QWidget):
             ax_phase.text(0.5, 0.5, "No data", ha="center", va="center")
         self.bode_canvas.draw_idle()
 
+        mode_config = self._mode_config(getattr(result, "mode", None))
+        time_cfg = mode_config.get("time_plot", {})
+        cmd_label = self._format_signal_label(time_cfg.get("command_label"), time_cfg.get("command_units"), result.command_key)
+        resp_label = self._format_signal_label(time_cfg.get("response_label"), time_cfg.get("response_units"), result.response_key)
+        ylabel = time_cfg.get("ylabel") or "Signal"
+
         ax_sig = self.time_canvas.axes[0][0]
         ax_sig.cla()
         if result.t.size:
@@ -628,14 +896,14 @@ class AutotuneWindow(QtWidgets.QWidget):
             cmd = result.values_by_pv.get(result.command_key)
             resp = result.values_by_pv.get(result.response_key)
             if cmd is not None:
-                ax_sig.plot(t[: len(cmd)], cmd, label=result.command_key)
+                ax_sig.plot(t[: len(cmd)], cmd, label=cmd_label)
             if resp is not None:
-                ax_sig.plot(t[: len(resp)], resp, label=result.response_key)
+                ax_sig.plot(t[: len(resp)], resp, label=resp_label)
             ax_sig.set_xlabel("Time [s]")
-            ax_sig.set_ylabel("Signal")
+            ax_sig.set_ylabel(ylabel)
             ax_sig.grid(True, linestyle="--", alpha=0.4)
             ax_sig.legend()
-            self.last_time_data = (t, cmd, resp, result.command_key, result.response_key)
+            self.last_time_data = (t, cmd, resp, cmd_label, resp_label, ylabel)
         else:
             ax_sig.text(0.5, 0.5, "No data", ha="center", va="center")
             self.last_time_data = None
@@ -682,7 +950,7 @@ class AutotuneWindow(QtWidgets.QWidget):
         if not self.last_time_data:
             QtWidgets.QMessageBox.information(self, "No data", "Run a measurement/reanalysis first.")
             return
-        t, cmd, resp, cmd_label, resp_label = self.last_time_data
+        t, cmd, resp, cmd_label, resp_label, ylabel = self.last_time_data
         if t is None or ((cmd is None) and (resp is None)):
             QtWidgets.QMessageBox.information(self, "No data", "No signals available to plot.")
             return
@@ -692,7 +960,7 @@ class AutotuneWindow(QtWidgets.QWidget):
         if resp is not None:
             ax.plot(t[: len(resp)], resp, label=resp_label)
         ax.set_xlabel("Time [s]")
-        ax.set_ylabel("Signal")
+        ax.set_ylabel(ylabel)
         ax.grid(True, linestyle="--", alpha=0.4)
         ax.legend()
         ax.set_title("Command vs Response")
