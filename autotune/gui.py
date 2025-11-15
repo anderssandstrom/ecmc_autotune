@@ -29,10 +29,11 @@ MODE_ORDER = [
     "csv_velocity_bode",
     "csv_position_tune",
     "generic",
+    "logger",
 ]
 MODE_DEFINITIONS = {
     pipeline.DEFAULT_MODE: {
-        "label": "CST velocity loop tuning",
+        "label": "CST velocity loop tune",
         "description": "Command torque (Trq) and observe velocity (VelAct). Mechanical model fitting and PI suggestions are enabled.",
         "supports_mechanical": True,
         "pv_defaults": {
@@ -104,7 +105,7 @@ MODE_DEFINITIONS = {
         "mechanical_hint": "Mechanical identification is disabled in CSV bode mode.",
     },
     "csv_position_tune": {
-        "label": "CSV closed loop position loop tune",
+        "label": "CSV position loop tune",
         "description": "Use speed demand (Spd), velocity readback (VelAct) as command feedback, and position response (PosAct).",
         "supports_mechanical": True,
         "pv_defaults": {
@@ -174,6 +175,43 @@ MODE_DEFINITIONS = {
             "ylabel": "Command / Response",
         },
         "mechanical_hint": "Mechanical identification is disabled in generic mode.",
+    },
+    "logger": {
+        "label": "Logger",
+        "description": "Record PVs over time without applying stepped-sine excitation.",
+        "supports_mechanical": False,
+        "preserve_prefix": True,
+        "pv_defaults": {
+            "prefix_p": "",
+            "prefix_r": "",
+            "sp": "",
+            "sp_rbv": "",
+            "act": "",
+        },
+        "pv_labels": {
+            "prefix_p": "Prefix P",
+            "prefix_r": "Prefix R",
+            "sp": "Primary PV (optional)",
+            "sp_rbv": "Secondary PV (optional)",
+            "act": "Tertiary PV (optional)",
+            "extra": "Extra log PVs",
+        },
+        "pv_tooltips": {
+            "prefix_p": "Optional first prefix, applied to all PV names.",
+            "prefix_r": "Optional second prefix segment.",
+            "sp": "PV to log as 'SP' (no writes performed).",
+            "sp_rbv": "PV to log as 'SP_RBV'.",
+            "act": "PV to log as 'ACT'.",
+            "extra": "Additional PVs to log (NAME=PV or PV).",
+        },
+        "time_plot": {
+            "command_label": "SP",
+            "command_units": "",
+            "response_label": "ACT",
+            "response_units": "",
+            "ylabel": "Signals",
+        },
+        "mechanical_hint": "",
     },
 }
 
@@ -307,6 +345,7 @@ class AutotuneWindow(QtWidgets.QWidget):
         self.latest_result = None
         self.last_bode_data = None
         self.last_time_data = None
+        self.last_extra_series = {}
         self.last_analysis_settings = pipeline.AnalysisSettings()
         self.current_mode_key = pipeline.DEFAULT_MODE
         self._last_auto_values = {}
@@ -413,6 +452,14 @@ class AutotuneWindow(QtWidgets.QWidget):
         time_layout = QtWidgets.QVBoxLayout()
         self.time_canvas = PlotCanvas(rows=1, cols=1, figsize=(5, 4), constrained_layout=True)
         time_layout.addWidget(self.time_canvas)
+        extra_label = QtWidgets.QLabel("Extra PVs (select to plot)")
+        extra_label.setWordWrap(True)
+        time_layout.addWidget(extra_label)
+        self.extra_pv_list = QtWidgets.QListWidget()
+        self.extra_pv_list.setSelectionMode(QtWidgets.QAbstractItemView.MultiSelection)
+        self.extra_pv_list.itemSelectionChanged.connect(self._refresh_time_plot)
+        self._set_tooltip(self.extra_pv_list, "Select extra logged PVs to overlay on the time plot.")
+        time_layout.addWidget(self.extra_pv_list)
         self.time_popup_btn = QtWidgets.QPushButton("Open Window")
         self.time_popup_btn.clicked.connect(self._show_time_popup)
         self._set_tooltip(self.time_popup_btn, "Pop out the captured time-domain signals into a separate window.")
@@ -632,7 +679,8 @@ class AutotuneWindow(QtWidgets.QWidget):
 
         defaults = config.get("pv_defaults", {})
         for field_name, widget in getattr(self, "_pv_fields", {}).items():
-            self._update_field_default(field_name, widget, defaults.get(field_name, ""), force_defaults)
+            preserve = config.get("preserve_prefix", False) and field_name in {"prefix_p", "prefix_r"}
+            self._update_field_default(field_name, widget, defaults.get(field_name, ""), force_defaults, preserve)
 
         self._set_tooltip(
             self.measure_btn,
@@ -650,12 +698,14 @@ class AutotuneWindow(QtWidgets.QWidget):
         self.mechanical_hint_label.setText(mech_hint)
         self.mechanical_hint_label.setVisible(bool(mech_hint))
 
-    def _update_field_default(self, name, widget, value, force=False):
+    def _update_field_default(self, name, widget, value, force=False, preserve=False):
         if widget is None:
             return
         value = value or ""
         current = widget.text().strip() if isinstance(widget, QtWidgets.QLineEdit) else widget.toPlainText().strip()
         last_auto = self._last_auto_values.get(name)
+        if preserve and current:
+            return
         if force or not current or (last_auto is not None and current == last_auto):
             if isinstance(widget, QtWidgets.QLineEdit):
                 widget.setText(value)
@@ -684,12 +734,12 @@ class AutotuneWindow(QtWidgets.QWidget):
         except ValueError as exc:
             QtWidgets.QMessageBox.critical(self, "Invalid input", str(exc))
             return
-        if not self._confirm_excitation(ex_cfg):
+        mode_key = self.current_mode_key or pipeline.DEFAULT_MODE
+        if mode_key != "logger" and not self._confirm_excitation(ex_cfg):
             self.append_log("Measurement cancelled by user before excitation")
             return
         log_path = self.log_path_edit.text().strip()
         self.last_analysis_settings = an_cfg
-        mode_key = self.current_mode_key or pipeline.DEFAULT_MODE
         self._run_worker(
             "measure",
             dict(pv=pv_cfg, excitation=ex_cfg, analysis=an_cfg, mechanical=mech_cfg, log_filename=log_path, mode=mode_key),
@@ -885,6 +935,8 @@ class AutotuneWindow(QtWidgets.QWidget):
             self.time_canvas.clear()
             self.last_bode_data = None
             self.last_time_data = None
+            self.last_extra_series = {}
+            self._update_extra_pv_list({})
             return
         freq = result.bode.get("freq", np.array([]))
         mag = result.bode.get("mag_db", np.array([]))
@@ -927,25 +979,71 @@ class AutotuneWindow(QtWidgets.QWidget):
         cmd_label = self._format_signal_label(time_cfg.get("command_label"), time_cfg.get("command_units"), result.command_key)
         resp_label = self._format_signal_label(time_cfg.get("response_label"), time_cfg.get("response_units"), result.response_key)
         ylabel = time_cfg.get("ylabel") or "Signal"
+        t = result.t if result.t.size else None
+        cmd = result.values_by_pv.get(result.command_key)
+        resp = result.values_by_pv.get(result.response_key)
+        self.last_time_data = dict(
+            t=t,
+            cmd=cmd,
+            resp=resp,
+            cmd_label=cmd_label,
+            resp_label=resp_label,
+            ylabel=ylabel,
+        )
+        extras = {
+            name: np.asarray(values)
+            for name, values in result.values_by_pv.items()
+            if name not in (result.command_key, result.response_key)
+        }
+        self.last_extra_series = extras
+        self._update_extra_pv_list(extras)
+        self._refresh_time_plot()
 
+    def _update_extra_pv_list(self, extras):
+        if self.extra_pv_list is None:
+            return
+        current = set(self._selected_extra_pvs())
+        self.extra_pv_list.blockSignals(True)
+        self.extra_pv_list.clear()
+        for name in sorted(extras.keys()):
+            item = QtWidgets.QListWidgetItem(name)
+            if name in current:
+                item.setSelected(True)
+            self.extra_pv_list.addItem(item)
+        self.extra_pv_list.blockSignals(False)
+
+    def _selected_extra_pvs(self):
+        if self.extra_pv_list is None:
+            return []
+        return [item.text() for item in self.extra_pv_list.selectedItems()]
+
+    def _refresh_time_plot(self):
         ax_sig = self.time_canvas.axes[0][0]
         ax_sig.cla()
-        if result.t.size:
-            t = result.t
-            cmd = result.values_by_pv.get(result.command_key)
-            resp = result.values_by_pv.get(result.response_key)
-            if cmd is not None:
-                ax_sig.plot(t[: len(cmd)], cmd, label=cmd_label)
-            if resp is not None:
-                ax_sig.plot(t[: len(resp)], resp, label=resp_label)
-            ax_sig.set_xlabel("Time [s]")
-            ax_sig.set_ylabel(ylabel)
-            ax_sig.grid(True, linestyle="--", alpha=0.4)
-            ax_sig.legend()
-            self.last_time_data = (t, cmd, resp, cmd_label, resp_label, ylabel)
-        else:
+        data = self.last_time_data
+        if not data or data["t"] is None:
             ax_sig.text(0.5, 0.5, "No data", ha="center", va="center")
-            self.last_time_data = None
+            self.time_canvas.draw_idle()
+            return
+        t = data["t"]
+        cmd = data["cmd"]
+        resp = data["resp"]
+        cmd_label = data["cmd_label"]
+        resp_label = data["resp_label"]
+        ylabel = data["ylabel"]
+        if cmd is not None:
+            ax_sig.plot(t[: len(cmd)], cmd, label=cmd_label)
+        if resp is not None:
+            ax_sig.plot(t[: len(resp)], resp, label=resp_label)
+        for name in self._selected_extra_pvs():
+            series = self.last_extra_series.get(name)
+            if series is None:
+                continue
+            ax_sig.plot(t[: len(series)], series, label=name)
+        ax_sig.set_xlabel("Time [s]")
+        ax_sig.set_ylabel(ylabel)
+        ax_sig.grid(True, linestyle="--", alpha=0.4)
+        ax_sig.legend()
         self.time_canvas.draw_idle()
 
     def _report_result(self, result):
@@ -994,18 +1092,26 @@ class AutotuneWindow(QtWidgets.QWidget):
         fig.show()
 
     def _show_time_popup(self):
-        if not self.last_time_data:
+        data = self.last_time_data
+        if not data or data["t"] is None:
             QtWidgets.QMessageBox.information(self, "No data", "Run a measurement/reanalysis first.")
             return
-        t, cmd, resp, cmd_label, resp_label, ylabel = self.last_time_data
-        if t is None or ((cmd is None) and (resp is None)):
-            QtWidgets.QMessageBox.information(self, "No data", "No signals available to plot.")
-            return
+        t = data["t"]
+        cmd = data["cmd"]
+        resp = data["resp"]
+        cmd_label = data["cmd_label"]
+        resp_label = data["resp_label"]
+        ylabel = data["ylabel"]
         fig, ax = plt.subplots(1, 1, figsize=(9, 4))
         if cmd is not None:
             ax.plot(t[: len(cmd)], cmd, label=cmd_label)
         if resp is not None:
             ax.plot(t[: len(resp)], resp, label=resp_label)
+        for name in self._selected_extra_pvs():
+            series = self.last_extra_series.get(name)
+            if series is None:
+                continue
+            ax.plot(t[: len(series)], series, label=name)
         ax.set_xlabel("Time [s]")
         ax.set_ylabel(ylabel)
         ax.grid(True, linestyle="--", alpha=0.4)

@@ -17,6 +17,7 @@ MEASUREMENT_MODES = {
     "csv_velocity_bode": {"label": "CSV closed loop bode", "supports_mechanical": False},
     "csv_position_tune": {"label": "CSV closed loop position tune", "supports_mechanical": False},
     "generic": {"label": "Generic", "supports_mechanical": False},
+    "logger": {"label": "Logger", "supports_mechanical": False},
 }
 
 
@@ -217,15 +218,15 @@ def run_measurement(
     mylogger = epics_logger.logger(Ts=1.0 / float(excitation.fs), pvs=pvs)
     _verify_pv_connections(mylogger, log_fn)
     sp_pv = mylogger.pvs.get("SP")
-    _log(log_fn, str(sp_pv))
-    
-    if sp_pv is None:
-        raise RuntimeError("SP PV handle is not available")
-
-    init_val = sp_pv.get(timeout=2.0)
-    if init_val is None:
-        raise RuntimeError("Failed to read the setpoint PV (%s)" % pvs["SP"])
-    sp_pv.put(init_val, wait=True)
+    init_val = None
+    if not log_only:
+        _log(log_fn, str(sp_pv))
+        if sp_pv is None:
+            raise RuntimeError("SP PV handle is not available")
+        init_val = sp_pv.get(timeout=2.0)
+        if init_val is None:
+            raise RuntimeError("Failed to read the setpoint PV (%s)" % pvs["SP"])
+        sp_pv.put(init_val, wait=True)
 
     _log(log_fn, "Starting EPICS monitors…")
     mylogger.start_monitors()
@@ -239,7 +240,8 @@ def run_measurement(
                 aborted = True
                 _log(log_fn, "Abort requested; stopping command stream...")
                 break
-            sp_pv.put(float(value), wait=False)
+            if not log_only and sp_pv is not None:
+                sp_pv.put(float(value), wait=False)
             t_next += dt
             if progress_fn:
                 progress_fn(idx / total)
@@ -253,11 +255,12 @@ def run_measurement(
         mylogger.stop_monitors()
         if progress_fn:
             progress_fn(1.0)
-        try:
-            sp_pv.put(float(init_val), wait=False)
-            _log(log_fn, "Restored SP to initial value.")
-        except Exception as exc:
-            _log(log_fn, f"Warning: failed to restore SP PV: {exc}")
+        if not log_only and sp_pv is not None and init_val is not None:
+            try:
+                sp_pv.put(float(init_val), wait=False)
+                _log(log_fn, "Restored SP to initial value.")
+            except Exception as exc:
+                _log(log_fn, f"Warning: failed to restore SP PV: {exc}")
     if aborted:
         raise RuntimeError("Measurement aborted by user.")
 
@@ -272,7 +275,7 @@ def run_measurement(
 
     _log(log_fn, "Running analysis on captured data…")
     t, vals_by_pv, *_ = mylogger.resample_to_common_time_base(fill="extrapolate", time_range="intersection")
-    result = _analyze(t, vals_by_pv, excitation.fs, analysis, mechanical, log_path, mode)
+    result = _analyze_with_fallback(t, vals_by_pv, excitation.fs, analysis, mechanical, log_path, mode)
     if log_path is None:
         return result
     return RunResult(
@@ -311,7 +314,7 @@ def reanalyze_log(
     t, vals_by_pv, *_ = mylogger.resample_to_common_time_base(fill="extrapolate", time_range="intersection")
     fs = analysis.sample_hz or _infer_sample_rate(t)
     _log(log_fn, f"Using sample frequency {fs:.2f} Hz for analysis")
-    return _analyze(t, vals_by_pv, fs, analysis, mechanical, log_path, mode)
+    return _analyze_with_fallback(t, vals_by_pv, fs, analysis, mechanical, log_path, mode)
 
 
 def _analyze(
@@ -390,6 +393,44 @@ def _analyze(
         mechanical=mechanical_result,
         mode=mode,
         position_pid=position_pid,
+    )
+
+
+def _analyze_with_fallback(t, vals_by_pv, fs, analysis, mechanical, log_path, mode):
+    mode = _normalize_mode(mode)
+    try:
+        return _analyze(t, vals_by_pv, fs, analysis, mechanical, log_path, mode)
+    except RuntimeError as exc:
+        if mode != "logger":
+            raise
+        return _basic_run_result(t, vals_by_pv, log_path, mode)
+
+
+def _basic_run_result(t, vals_by_pv, log_path, mode):
+    if not vals_by_pv:
+        raise RuntimeError("No PV data available for logging")
+    keys = list(vals_by_pv.keys())
+    cmd_key = keys[0]
+    resp_key = keys[1] if len(keys) > 1 else keys[0]
+    bode_payload = {
+        "freq": np.array([]),
+        "mag_db": np.array([]),
+        "phase": np.array([]),
+        "phase_comp": np.array([]),
+        "r2_u": np.array([]),
+        "r2_y": np.array([]),
+    }
+    return RunResult(
+        t=np.asarray(t),
+        values_by_pv={k: np.asarray(v) for k, v in vals_by_pv.items()},
+        bode=bode_payload,
+        command_key=cmd_key,
+        response_key=resp_key,
+        log_file=str(log_path) if log_path else None,
+        segments=None,
+        mechanical=None,
+        mode=mode,
+        position_pid=None,
     )
 
 
