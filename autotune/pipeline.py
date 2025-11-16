@@ -25,6 +25,7 @@ TORQUE_SCALE_TARGETS = {
 MEASUREMENT_MODES = {
     "cst_velocity": {"label": "CST velocity loop tuning", "supports_mechanical": True},
     "csv_velocity_bode": {"label": "CSV closed loop bode", "supports_mechanical": False},
+    "csv_position_bode": {"label": "Closed position loop bode", "supports_mechanical": False},
     "csv_position_tune": {"label": "CSV closed loop position tune", "supports_mechanical": False},
     "generic": {"label": "Generic", "supports_mechanical": False},
     "logger": {"label": "Logger", "supports_mechanical": False},
