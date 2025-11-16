@@ -82,6 +82,11 @@ MODE_DEFINITIONS = {
             "ylabel": "Torque [%] / Velocity",
         },
         "mechanical_hint": "",
+        "tuning_notes": [
+            "Torque command and readback are divided by the torque scale before writing and multiplied after logging to recover Nm.",
+            "Velocity feedback is multiplied by the velocity scale to convert to rad/s, ensuring the mechanical fit uses physical units.",
+            "After fitting tau = J·dw/dt + B·w + Tc·sign(w), velocity PI gains are computed via velocity_pi_from_JB using the target bandwidth/zeta.",
+        ],
     },
     "csv_velocity_bode": {
         "label": "CSV closed loop bode",
@@ -122,6 +127,11 @@ MODE_DEFINITIONS = {
             "ylabel": "Speed [rad/s]",
         },
         "mechanical_hint": "Mechanical identification is disabled in CSV bode mode.",
+        "tuning_notes": [
+            "Velocity loop remains closed; stepped-sine drive is injected as a speed demand.",
+            "Velocity scale divides the command sent to the drive and multiplies the logged responses to show rad/s.",
+            "No mechanical model fitting or PI suggestions are generated in this mode (bode plots only).",
+        ],
     },
     "csv_position_tune": {
         "label": "CSV position loop tune",
@@ -168,6 +178,12 @@ MODE_DEFINITIONS = {
             "ylabel": "Speed / Position",
         },
         "mechanical_hint": "",
+        "tuning_notes": [
+            "Velocity scale divides the speed demand before writing and multiplies the logged speed/velocity PVs to keep rad/s.",
+            "Position bode plot is extracted from the speed command vs. position response to estimate the closed-loop plant gain.",
+            "Position PID gains come from _position_pid_from_bode, using the target bandwidth/zeta and the low-frequency bode magnitude.",
+            "Mechanical identification is not applied; the PID suggestion uses the bode-derived gain directly.",
+        ],
     },
     "generic": {
         "label": "Generic mode",
@@ -208,6 +224,10 @@ MODE_DEFINITIONS = {
             "ylabel": "Command / Response",
         },
         "mechanical_hint": "Mechanical identification is disabled in generic mode.",
+        "tuning_notes": [
+            "Tuning depends entirely on the PVs and scaling you configure; no mechanical model or PID suggestion is generated automatically.",
+            "Use this mode for ad-hoc bode captures or logging; export the bode data to design controllers externally.",
+        ],
     },
     "logger": {
         "label": "Logger",
@@ -425,7 +445,7 @@ class AutotuneWindow(QtWidgets.QWidget):
         self.tabs.addTab(self.pv_tab, "PV Settings")
         self.tabs.addTab(self.exc_tab, "Excitation")
         self.tabs.addTab(self.analysis_tab, "Analysis")
-        self.tabs.addTab(self.pid_tab, "PID Tune")
+        self.tabs.addTab(self.pid_tab, "Results")
         self.tabs.addTab(self.file_tab, "File")
         self.tabs.addTab(self.docs_tab, "Docs")
         settings_layout.addWidget(self.tabs)
@@ -473,34 +493,21 @@ class AutotuneWindow(QtWidgets.QWidget):
         time_layout = QtWidgets.QVBoxLayout()
         self.time_canvas = PlotCanvas(rows=1, cols=1, figsize=(5, 4), constrained_layout=True)
         time_layout.addWidget(self.time_canvas)
-        extra_label = QtWidgets.QLabel("Extra PVs (select to plot)")
-        extra_label.setWordWrap(True)
-        time_layout.addWidget(extra_label)
-        self.extra_pv_list = QtWidgets.QListWidget()
-        self.extra_pv_list.setSelectionMode(QtWidgets.QAbstractItemView.MultiSelection)
-        self.extra_pv_list.itemSelectionChanged.connect(self._refresh_time_plot)
-        self._set_tooltip(self.extra_pv_list, "Select extra logged PVs to overlay on the time plot.")
-        time_layout.addWidget(self.extra_pv_list)
-        button_row = QtWidgets.QHBoxLayout()
-        self.time_popup_btn = QtWidgets.QPushButton("Open Signals Plot")
+        self.time_popup_btn = QtWidgets.QPushButton("Open Window")
         self.time_popup_btn.clicked.connect(self._show_time_popup)
         self._set_tooltip(self.time_popup_btn, "Pop out the primary command/response signals into a separate window.")
-        button_row.addWidget(self.time_popup_btn)
-        self.extra_popup_btn = QtWidgets.QPushButton("Open Selected PVs")
-        self.extra_popup_btn.clicked.connect(self._show_selected_pv_popup)
-        self._set_tooltip(self.extra_popup_btn, "Plot the currently selected extra PVs in a separate window.")
-        button_row.addWidget(self.extra_popup_btn)
-        button_row.addStretch(1)
-        time_layout.addLayout(button_row)
+        time_layout.addWidget(self.time_popup_btn)
         self.time_group.setLayout(time_layout)
 
         plots_row.addWidget(self.bode_group, 1)
         plots_row.addWidget(self.time_group, 1)
-        results_layout.addLayout(plots_row, 1)
+        results_layout.addLayout(plots_row, 3)
 
         self.log_output = QtWidgets.QPlainTextEdit()
         self.log_output.setReadOnly(True)
-        results_layout.addWidget(self.log_output, 1)
+        self.log_output.setMaximumHeight(140)
+        self.log_output.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        results_layout.addWidget(self.log_output)
 
         layout.addWidget(results_widget, 1)
 
@@ -511,8 +518,8 @@ class AutotuneWindow(QtWidgets.QWidget):
     def _build_pv_tab(self):
         widget = QtWidgets.QWidget()
         layout = QtWidgets.QHBoxLayout(widget)
-        form_container = QtWidgets.QWidget()
-        form = QtWidgets.QFormLayout(form_container)
+        form_group = QtWidgets.QGroupBox("PV definitions and scaling")
+        form = QtWidgets.QFormLayout(form_group)
         self.pv_prefix_p = self._line_edit("")
         self._set_tooltip(self.pv_prefix_p, "Prefix part P (optional).")
         self.pv_prefix_r = self._line_edit("")
@@ -527,8 +534,8 @@ class AutotuneWindow(QtWidgets.QWidget):
         self._set_tooltip(self.pv_torque_scale, "Manual Nm-per-command scaling; defaults to rated torque / 100.")
         self.pv_velocity_scale = self._line_edit("1.0")
         self._set_tooltip(self.pv_velocity_scale, "Scaling factor to convert velocity PV units to physical units.")
-        form_container_right = QtWidgets.QWidget()
-        form_right = QtWidgets.QVBoxLayout(form_container_right)
+        extra_group = QtWidgets.QGroupBox("Extra PV logging")
+        form_right = QtWidgets.QVBoxLayout(extra_group)
         self.pv_extra = PVPlainTextEdit("")
         self.pv_extra.setPlaceholderText("One PV per line (optional NAME=PV). Empty line removes logging.")
         self.pv_prefix_label_p = QtWidgets.QLabel("Prefix P")
@@ -545,7 +552,7 @@ class AutotuneWindow(QtWidgets.QWidget):
         form.addRow("Motor rated torque [Nm]", self.pv_motor_torque)
         form.addRow("Torque scale [Nm/unit]", self.pv_torque_scale)
         form.addRow("Velocity scale", self.pv_velocity_scale)
-        layout.addWidget(form_container, 2)
+        layout.addWidget(form_group, 2)
         self.torque_fields = [
             self.pv_motor_torque,
             self.pv_torque_scale,
@@ -563,7 +570,7 @@ class AutotuneWindow(QtWidgets.QWidget):
         }
         suggestion_box = QtWidgets.QGroupBox("Available PVs")
         suggestion_layout = QtWidgets.QVBoxLayout(suggestion_box)
-        hint = QtWidgets.QLabel("Double-click to insert into focused field or drag text.")
+        hint = QtWidgets.QLabel("Drag entries onto the field you want to populate.")
         hint.setWordWrap(True)
         suggestion_layout.addWidget(hint)
         self.pv_list = PVSuggestionList(PV_SUGGESTIONS)
@@ -572,14 +579,16 @@ class AutotuneWindow(QtWidgets.QWidget):
         suggestion_layout.addWidget(self.pv_list)
         layout.addWidget(suggestion_box, 1)
 
-        layout.addWidget(form_container_right, 1)
+        layout.addWidget(extra_group, 1)
         form_right.addWidget(self.pv_extra_label)
         form_right.addWidget(self.pv_extra)
         return widget
 
     def _build_excitation_tab(self):
         widget = QtWidgets.QWidget()
-        layout = QtWidgets.QHBoxLayout(widget)
+        layout = QtWidgets.QVBoxLayout(widget)
+        settings_group = QtWidgets.QGroupBox("Stepped-sine settings")
+        group_layout = QtWidgets.QHBoxLayout(settings_group)
         left_form = QtWidgets.QFormLayout()
         right_form = QtWidgets.QFormLayout()
         self.ex_fs = self._line_edit("1000")
@@ -612,19 +621,20 @@ class AutotuneWindow(QtWidgets.QWidget):
         right_form.addRow("Transition min [s]", self.ex_trans_min)
         right_form.addRow("Transition frac", self.ex_trans_frac)
         right_form.addRow("Edge taper cycles", self.ex_taper)
-        layout.addLayout(left_form, 1)
-        layout.addLayout(right_form, 1)
+        group_layout.addLayout(left_form, 1)
+        group_layout.addLayout(right_form, 1)
+        layout.addWidget(settings_group)
         preview_btn = QtWidgets.QPushButton("Preview excitation")
         preview_btn.clicked.connect(self._preview_excitation_signal)
         self._set_tooltip(preview_btn, "Generate and plot the current excitation waveform.")
-        layout.addWidget(preview_btn)
+        layout.addWidget(preview_btn, alignment=QtCore.Qt.AlignLeft)
         return widget
 
     def _build_analysis_tab(self):
         widget = QtWidgets.QWidget()
         layout = QtWidgets.QHBoxLayout(widget)
-        form_container = QtWidgets.QWidget()
-        grid = QtWidgets.QGridLayout(form_container)
+        analysis_group = QtWidgets.QGroupBox("Bode analysis settings")
+        grid = QtWidgets.QGridLayout(analysis_group)
         self.an_tau = self._line_edit("2.5")
         self._set_tooltip(self.an_tau, "Exponential smoothing constant for bode estimator in milliseconds.")
         self.an_block = self._line_edit("0.5")
@@ -662,7 +672,7 @@ class AutotuneWindow(QtWidgets.QWidget):
             row_pos = row
             grid.addWidget(QtWidgets.QLabel(label), row_pos, col * 2)
             grid.addWidget(widget_field, row_pos, col * 2 + 1)
-        layout.addWidget(form_container, 2)
+        layout.addWidget(analysis_group, 2)
         self.mech_filter_group = QtWidgets.QGroupBox("Mechanical fitting filters")
         mech_form = QtWidgets.QFormLayout(self.mech_filter_group)
         self.me_smooth = self._line_edit("150")
@@ -675,11 +685,8 @@ class AutotuneWindow(QtWidgets.QWidget):
         mech_form.addRow("Derivative cutoff [Hz]", self.me_deriv)
         mech_form.addRow("Velocity deadband", self.me_deadband)
         layout.addWidget(self.mech_filter_group, 1)
-        return widget
-
-    def _build_pid_tab(self):
-        widget = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(widget)
+        target_group = QtWidgets.QGroupBox("PID target settings")
+        target_layout = QtWidgets.QVBoxLayout(target_group)
         form = QtWidgets.QFormLayout()
         self.pid_bw = self._line_edit("100")
         self._set_tooltip(self.pid_bw, "Target closed-loop bandwidth used for PI/PID suggestions.")
@@ -687,36 +694,64 @@ class AutotuneWindow(QtWidgets.QWidget):
         self._set_tooltip(self.pid_zeta, "Desired damping ratio for the suggested controllers.")
         form.addRow("Target bandwidth [Hz]", self.pid_bw)
         form.addRow("Target zeta", self.pid_zeta)
-        layout.addLayout(form)
+        target_layout.addLayout(form)
         note = QtWidgets.QLabel("Velocity PI (CST) and position PID (CSV position tune) both use these targets.")
         note.setWordWrap(True)
-        layout.addWidget(note)
-        layout.addWidget(QtWidgets.QLabel("Latest suggestions"))
+        target_layout.addWidget(note)
+        layout.addWidget(target_group, 1)
+        return widget
+
+    def _build_pid_tab(self):
+        widget = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(widget)
+        suggestions_group = QtWidgets.QGroupBox("Latest suggestions")
+        suggestions_layout = QtWidgets.QVBoxLayout(suggestions_group)
         self.pid_result_model = QtGui.QStandardItemModel(0, 9, widget)
         self.pid_result_model.setHorizontalHeaderLabels([
             "Mode",
-            "Kp [unit/command]",
-            "Ki [unit/command/s]",
-            "Kd [unit/command·s]",
-            "Ti [s]",
-            "J [N*m*s^2]",
-            "B [N*m*s/rad]",
-            "Tc [N*m]",
-            "Residual RMS [N*m]",
+            "Kp",
+            "Ki",
+            "Kd",
+            "Ti",
+            "J",
+            "B",
+            "Tc",
+            "Residual",
         ])
         self.pid_result_view = QtWidgets.QTableView()
         self.pid_result_view.setModel(self.pid_result_model)
-        self.pid_result_view.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
-        results_row = QtWidgets.QHBoxLayout()
-        results_row.addWidget(self.pid_result_view, 1)
+        header = self.pid_result_view.horizontalHeader()
+        header.setSectionResizeMode(QtWidgets.QHeaderView.Interactive)
+        header.setStretchLastSection(True)
+        self.pid_result_view.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        suggestions_layout.addWidget(self.pid_result_view, 1)
         clear_btn = QtWidgets.QPushButton("Clear results")
         clear_btn.setMaximumWidth(120)
         clear_btn.clicked.connect(self._clear_pid_results)
-        button_column = QtWidgets.QVBoxLayout()
-        button_column.addWidget(clear_btn)
-        button_column.addStretch(1)
-        results_row.addLayout(button_column)
-        layout.addLayout(results_row)
+        suggestions_layout.addWidget(clear_btn, alignment=QtCore.Qt.AlignRight)
+        layout.addWidget(suggestions_group)
+
+        extra_group = QtWidgets.QGroupBox("Extra PV plotting")
+        extra_layout = QtWidgets.QVBoxLayout(extra_group)
+        extra_layout.setContentsMargins(4, 4, 4, 4)
+        extra_layout.setSpacing(4)
+        self.extra_pv_list = QtWidgets.QListWidget()
+        self.extra_pv_list.setSelectionMode(QtWidgets.QAbstractItemView.MultiSelection)
+        self.extra_pv_list.itemSelectionChanged.connect(self._refresh_time_plot)
+        self._set_tooltip(self.extra_pv_list, "Select entries to include in the embedded signal plot or standalone window.")
+        self.extra_pv_list.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        extra_layout.addWidget(self.extra_pv_list, 1)
+        self.extra_popup_btn = QtWidgets.QPushButton("Plot extra PVs")
+        self.extra_popup_btn.setMaximumWidth(140)
+        self.extra_popup_btn.clicked.connect(self._show_selected_pv_popup)
+        self._set_tooltip(self.extra_popup_btn, "Plot the currently selected extra PVs in a separate window.")
+        extra_layout.addWidget(self.extra_popup_btn, alignment=QtCore.Qt.AlignRight)
+        suggestions_group.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        extra_group.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        paired_row = QtWidgets.QHBoxLayout()
+        paired_row.addWidget(suggestions_group, 2)
+        paired_row.addWidget(extra_group, 1)
+        layout.addLayout(paired_row)
         layout.addStretch(1)
         return widget
 
@@ -949,6 +984,11 @@ class AutotuneWindow(QtWidgets.QWidget):
             hint = info.get("mechanical_hint")
             if hint:
                 lines.append(hint)
+            tuning_notes = info.get("tuning_notes")
+            if tuning_notes:
+                lines.append("Tuning derivation:")
+                for note in tuning_notes:
+                    lines.append(f"  - {note}")
             lines.append("")
         self.docs_area.setText("\n".join(lines).strip())
 
@@ -1430,30 +1470,38 @@ class AutotuneWindow(QtWidgets.QWidget):
         ax_sig.legend()
         self.time_canvas.draw_idle()
 
-    def _append_pid_result(self, label, kp, ki, kd, ti=None, mechanical=None):
+    def _append_pid_result(self, label, kp, ki, kd, ti=None, mechanical=None, pid_units=None):
         if not hasattr(self, "pid_result_model") or self.pid_result_model is None:
             return
         mechanical = mechanical or {}
+        pid_units = pid_units or {}
 
-        def _fmt_mech(value):
+        def _fmt_value(value, unit):
             try:
                 val = float(value)
             except (TypeError, ValueError):
                 return ""
             if not np.isfinite(val):
                 return ""
-            return f"{val:.4g}"
+            return f"{val:.4g} {unit}".strip()
+
+        ti_unit = pid_units.get("ti", "s")
+        ti_text = "∞"
+        if ti_unit:
+            ti_text = f"{ti_text} {ti_unit}".strip()
+        if ti is not None and np.isfinite(ti):
+            ti_text = _fmt_value(ti, ti_unit)
 
         items = [
             QtGui.QStandardItem(f"{label}"),
-            QtGui.QStandardItem(f"{kp:.4g}"),
-            QtGui.QStandardItem(f"{ki:.4g}"),
-            QtGui.QStandardItem(f"{kd:.4g}"),
-            QtGui.QStandardItem(f"{ti:.4g}" if ti is not None and np.isfinite(ti) else "∞"),
-            QtGui.QStandardItem(_fmt_mech(mechanical.get("J"))),
-            QtGui.QStandardItem(_fmt_mech(mechanical.get("B"))),
-            QtGui.QStandardItem(_fmt_mech(mechanical.get("Tc"))),
-            QtGui.QStandardItem(_fmt_mech(mechanical.get("residual_rms"))),
+            QtGui.QStandardItem(_fmt_value(kp, pid_units.get("kp", "unit/command"))),
+            QtGui.QStandardItem(_fmt_value(ki, pid_units.get("ki", "unit/command/s"))),
+            QtGui.QStandardItem(_fmt_value(kd, pid_units.get("kd", "unit/command*s"))),
+            QtGui.QStandardItem(ti_text),
+            QtGui.QStandardItem(_fmt_value(mechanical.get("J"), "Nm*s^2")),
+            QtGui.QStandardItem(_fmt_value(mechanical.get("B"), "Nm*s/rad")),
+            QtGui.QStandardItem(_fmt_value(mechanical.get("Tc"), "Nm")),
+            QtGui.QStandardItem(_fmt_value(mechanical.get("residual_rms"), "Nm")),
         ]
         for item in items:
             item.setEditable(False)
@@ -1479,7 +1527,21 @@ class AutotuneWindow(QtWidgets.QWidget):
                     f"Suggested PI: Kp={mech['kp']:.4g}, Ki={mech['ki']:.4g}, Ti={mech['ti']:.4g}"
                 )
                 print("[PID] appending velocity PI row", mech.get("kp"), mech.get("ki"), mech.get("ti"))
-                self._append_pid_result("Velocity PI", mech['kp'], mech['ki'], 0.0, mech.get('ti'), mechanical=mech)
+                velocity_units = {
+                    "kp": "Nm*s/rad",
+                    "ki": "Nm/rad",
+                    "kd": "Nm*s^2/rad",
+                    "ti": "s",
+                }
+                self._append_pid_result(
+                    "Velocity PI",
+                    mech['kp'],
+                    mech['ki'],
+                    0.0,
+                    mech.get('ti'),
+                    mechanical=mech,
+                    pid_units=velocity_units,
+                )
         if result.position_pid:
             pid = result.position_pid
             source = "bode fit" if pid.get("gain_from_bode") else "targets"
@@ -1488,7 +1550,20 @@ class AutotuneWindow(QtWidgets.QWidget):
                 f"Kp={pid['kp']:.4g}, Ki={pid['ki']:.4g}, Kd={pid['kd']:.4g}, Ti={pid['ti']:.4g} "
                 f"(target {pid['target_bw_hz']:.4g} Hz, zeta={pid['zeta']:.3g}, source={source})"
             )
-            self._append_pid_result("Position PID", pid['kp'], pid['ki'], pid['kd'], pid.get('ti'))
+            position_units = {
+                "kp": "1/s",
+                "ki": "1/s^2",
+                "kd": "",
+                "ti": "s",
+            }
+            self._append_pid_result(
+                "Position PID",
+                pid['kp'],
+                pid['ki'],
+                pid['kd'],
+                pid.get('ti'),
+                pid_units=position_units,
+            )
 
     def _show_bode_popup(self):
         if not self.last_bode_data:
@@ -1525,21 +1600,49 @@ class AutotuneWindow(QtWidgets.QWidget):
         cmd_label = data["cmd_label"]
         resp_label = data["resp_label"]
         ylabel = data["ylabel"]
-        fig, ax = plt.subplots(1, 1, figsize=(9, 4))
+        fig, ax_left = plt.subplots(1, 1, figsize=(9, 4))
+        ax_right = None
+        freq_series = []
+        segment_series = []
         if cmd is not None:
-            ax.plot(t[: len(cmd)], cmd, label=cmd_label)
+            ax_left.plot(t[: len(cmd)], cmd, label=cmd_label)
         if resp is not None:
-            ax.plot(t[: len(resp)], resp, label=resp_label)
+            ax_left.plot(t[: len(resp)], resp, label=resp_label)
         for name in self._selected_extra_pvs():
-            series = self.last_extra_series.get(name)
+            series = self._series_for_name(name)
             if series is None:
                 continue
-            ax.plot(t[: len(series)], series, label=name)
-        ax.set_xlabel("Time [s]")
-        ax.set_ylabel(ylabel)
-        ax.grid(True, linestyle="--", alpha=0.4)
-        ax.legend()
-        ax.set_title("Command vs Response")
+            data = np.asarray(series, float)
+            lower = name.lower()
+            if "freq" in lower:
+                freq_series.append((name, data))
+            elif "segment" in lower:
+                segment_series.append((name, data))
+        max_freq = 1.0
+        for _, series in freq_series:
+            finite = series[np.isfinite(series)]
+            if finite.size:
+                max_freq = max(max_freq, float(np.nanmax(np.abs(finite))))
+        if freq_series or segment_series:
+            ax_right = ax_left.twinx()
+            ax_right.set_ylabel("Segments / Frequency [Hz]")
+        for name, series in freq_series:
+            ax_right.plot(t[: len(series)], series, label=name, linestyle="--")
+        for name, series in segment_series:
+            scaled = series.copy()
+            finite = scaled[np.isfinite(scaled)]
+            if finite.size:
+                max_seg = float(np.nanmax(np.abs(finite)))
+                if max_seg > 0:
+                    scaled = (scaled / max_seg) * max_freq
+            ax_right.plot(t[: len(series)], scaled, label=f"{name} (scaled)")
+        handles_left, labels_left = ax_left.get_legend_handles_labels()
+        handles_right, labels_right = (ax_right.get_legend_handles_labels() if ax_right else ([], []))
+        ax_left.set_xlabel("Time [s]")
+        ax_left.set_ylabel(ylabel)
+        ax_left.grid(True, linestyle="--", alpha=0.4)
+        ax_left.legend(handles_left + handles_right, labels_left + labels_right, loc="best")
+        ax_left.set_title("Command vs Response")
         fig.tight_layout()
         fig.show()
 
@@ -1555,23 +1658,58 @@ class AutotuneWindow(QtWidgets.QWidget):
         if t is None:
             QtWidgets.QMessageBox.information(self, "No data", "No time base available to plot.")
             return
-        fig, ax = plt.subplots(1, 1, figsize=(9, 4))
+        fig, ax_left = plt.subplots(1, 1, figsize=(9, 4))
+        ax_right = None
         plotted = False
+        freq_series = []
+        segment_series = []
+        other_series = []
         for name in selected:
             series = self._series_for_name(name)
             if series is None:
                 continue
-            ax.plot(t[: len(series)], series, label=name)
+            data = np.asarray(series, float)
+            lower_name = name.lower()
+            if "freq" in lower_name:
+                freq_series.append((name, data))
+            elif "segment" in lower_name:
+                segment_series.append((name, data))
+            else:
+                other_series.append((name, data))
+        for name, series in other_series:
+            ax_left.plot(t[: len(series)], series, label=name)
+            plotted = True
+        max_freq = 1.0
+        for _, series in freq_series:
+            finite = series[np.isfinite(series)]
+            if finite.size:
+                max_freq = max(max_freq, float(np.nanmax(np.abs(finite))))
+        if freq_series or segment_series:
+            ax_right = ax_left.twinx()
+            ax_right.set_ylabel("Segments / Frequency [Hz]")
+        for name, series in freq_series:
+            ax_right.plot(t[: len(series)], series, label=name, linestyle="--")
+            plotted = True
+        for name, series in segment_series:
+            scaled = series.copy()
+            finite = scaled[np.isfinite(scaled)]
+            if finite.size:
+                max_seg = float(np.nanmax(np.abs(finite)))
+                if max_seg > 0:
+                    scaled = (scaled / max_seg) * max_freq
+            ax_right.plot(t[: len(series)], scaled, label=f"{name} (scaled)")
             plotted = True
         if not plotted:
             QtWidgets.QMessageBox.information(self, "No data", "Selected PVs have no samples to plot.")
             plt.close(fig)
             return
-        ax.set_xlabel("Time [s]")
-        ax.set_ylabel("Selected PVs")
-        ax.grid(True, linestyle="--", alpha=0.4)
-        ax.legend()
-        ax.set_title("Extra PVs")
+        handles_left, labels_left = ax_left.get_legend_handles_labels()
+        handles_right, labels_right = (ax_right.get_legend_handles_labels() if ax_right else ([], []))
+        ax_left.set_xlabel("Time [s]")
+        ax_left.set_ylabel("Selected PVs")
+        ax_left.grid(True, linestyle="--", alpha=0.4)
+        ax_left.legend(handles_left + handles_right, labels_left + labels_right, loc="best")
+        ax_left.set_title("Extra PVs")
         fig.tight_layout()
         fig.show()
 
