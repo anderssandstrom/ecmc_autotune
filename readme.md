@@ -29,7 +29,7 @@ This repository contains the PyQt-based GUI and helper scripts for collecting st
 ## Using the GUI
 
 ### Flow tab
-- Select the operating mode (CST velocity loop tuning, CSV closed-loop bode, CSV position loop tune, generic, or logger-only).
+- Select the operating mode (CST velocity loop tuning, CSV closed-loop bode, CSV position loop tune, **Closed position loop bode**, generic, or logger-only).
 - A flowchart illustrates the capture/analysis path and updates to match the chosen mode.
 - Inline text plus a “mode info” button summarize what each mode logs, how scaling is applied, and whether mechanical identification/PID suggestions are available.
 
@@ -46,9 +46,11 @@ This repository contains the PyQt-based GUI and helper scripts for collecting st
 - Adjust bode-processing settings (delay compensation, block length, frequency window, `R²` limits, etc.) across two columns for easier scanning.
 - The right-most “Mechanical*” group controls smoothing/derivative filters, velocity deadband, and target PI bandwidth/zeta. It is automatically greyed out when the active mode does not perform mechanical fitting.
 
-### PID tab
-- Enter the target closed-loop bandwidth and damping used when generating velocity PI (CST) or position PID (CSV position tune) suggestions.
-- The results table now includes J, B, Tc, and residual RMS from the mechanical identification alongside the suggested Kp/Ki/Kd/Ti values. Use the **Clear results** button to reset the history.
+### Results tab
+- Enter the target closed-loop bandwidth and damping used when generating velocity PI (CST) or position PID (CSV position tune) suggestions (controls appear in the Analysis tab’s mechanical group).
+- The “Latest suggestions” table lists Kp/Ki/Kd/Ti plus J/B/Tc/residual values; the **Clear results** button resets the history.
+- The integrated bode/command plots sit above a compact log window (shortened to leave more room for the graphics).
+- The “Extra PV plotting” panel lets you select additional PVs (including derived segment masks/frequency tracks) and open them in a separate window using the **Plot extra PVs** button. Segments and frequency traces always plot on the right y-axis for clarity.
 
 ### PV / Signals tab
 - Choose which logged PVs populate the time-domain plots. Extra PVs (including identified segment boundaries and detected frequency tracks) can be graphed in separate windows without disturbing the embedded signal plot.
