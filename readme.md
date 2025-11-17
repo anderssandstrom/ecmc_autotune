@@ -29,14 +29,14 @@ This repository contains the PyQt-based GUI and helper scripts for collecting st
 ## Using the GUI
 
 ### Flow tab
-- Select the operating mode (CST velocity loop tuning, CSV closed-loop bode, CSV position loop tune, **Closed position loop bode**, generic, or logger-only).
+- Select the operating mode (CST velocity loop tuning, CSV closed-loop bode, CSV position loop tune, **CSP closed loop bode**, or logger-only).
 - A flowchart illustrates the capture/analysis path and updates to match the chosen mode.
 - Inline text plus a “mode info” button summarize what each mode logs, how scaling is applied, and whether mechanical identification/PID suggestions are available.
 
 ### PV Settings tab
 - Configure the two-part PV prefix (`P` + `R`) or leave blank to use absolute PV names.
 - Set the command (`SP`), readback (`SP_RBV`), response (`ACT`), and any extra PVs to sample. Extra entries are logged for plotting and can be selected for the “Extra PVs” plots.
-- Specify the velocity scale, torque scale, and motor rated torque. Velocity scaling is applied to all speed-related PVs in the selected modes (command divided, response multiplied) to convert to physical rad/s. Torque scaling is CST-specific (command divided before writing, readback/actual multiplied when analyzing). Defaults of `1.0` let you work in native drive units.
+- Specify torque, velocity, and position scales (plus motor rated torque). Commands are divided by their scale; logged readbacks are multiplied so you can work in Nm, rad/s, or rad. CST uses torque/velocity, CSV* uses velocity, and CSP/CSV position modes also use position scaling. Defaults of `1.0` let you work in native drive units.
 
 ### Excitation tab
 - Configure the stepped-sine sweep: sampling rate, frequency span, amplitude, settle/measurement cycles, and transition rules.
@@ -56,7 +56,7 @@ This repository contains the PyQt-based GUI and helper scripts for collecting st
 - Choose which logged PVs populate the time-domain plots. Extra PVs (including identified segment boundaries and detected frequency tracks) can be graphed in separate windows without disturbing the embedded signal plot.
 
 ### File tab
-- Manage log destinations independently of capture mode. The GUI stores every measurement—along with PV selections, excitation, analysis, and PID settings—in the `.pkl` metadata. Loading a log restores all tabs to the exact configuration that produced it.
+- Manage log destinations independently of capture mode. The GUI stores every measurement—along with PV selections, excitation, analysis, and PID settings—in the `.pkl` metadata. Loading a log restores all tabs (including mode) to the exact configuration that produced it. The **Reanalyze Log** button lives here.
 
 ### Docs tab
 - Contains detailed descriptions of every mode at all times. The flow-tab info button opens the relevant excerpt in a pop-up for quick reference.

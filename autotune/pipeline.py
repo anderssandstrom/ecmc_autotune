@@ -31,7 +31,6 @@ MEASUREMENT_MODES = {
     "csv_velocity_bode": {"label": "CSV closed loop bode", "supports_mechanical": False},
     "csv_position_bode": {"label": "Closed position loop bode", "supports_mechanical": False},
     "csv_position_tune": {"label": "CSV closed loop position tune", "supports_mechanical": False},
-    "generic": {"label": "Generic", "supports_mechanical": False},
     "logger": {"label": "Logger", "supports_mechanical": False},
 }
 
@@ -860,7 +859,7 @@ def _normalize_mode(mode):
             key = str(mode).strip().lower()
     if key in MEASUREMENT_MODES:
         return key
-    return DEFAULT_MODE if key is None else "generic"
+    return DEFAULT_MODE
 
 
 def _mode_supports_mechanical(mode):
@@ -877,7 +876,6 @@ def _mode_prefix(mode):
         "csv_velocity_bode": "CSV",
         "csv_position_bode": "CSP",
         "csv_position_tune": "CSP_TUNE",
-        "generic": "GEN",
         "logger": "LOG",
     }
     return mapping.get(mode, str(mode).upper() if mode else "")
