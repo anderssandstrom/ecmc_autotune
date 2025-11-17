@@ -289,6 +289,7 @@ ethercat sdos -m1 -p0 upload  0x8010 0x14
 ethercat -m1 -p0 upload  0x8010 0x14
 ethercat -m1 -p0 upload  0x8010 0x15
 # test auto tune params but less aggressive Ti
-ethercat -m1 -p0 download  0x8010 0x14 1280
-ethercat -m1 -p0 download  0x8010 0x15 10
+ethercat -m1 -p0 download  0x8010 0x14 10
+ethercat -m1 -p0 download  0x8010 0x15 1280
 ```
+
