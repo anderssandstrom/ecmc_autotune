@@ -1163,6 +1163,9 @@ class AutotuneWindow(QtWidgets.QWidget):
                 meta = payload.get("metadata") or {}
             elif "pv_settings" in payload:
                 meta = payload
+        mode = meta.get("mode") if isinstance(meta, dict) else None
+        if mode:
+            self._restore_mode_from_meta(mode)
         settings = meta.get("pv_settings") if isinstance(meta, dict) else None
         if settings:
             self._restore_pv_settings_from_meta(settings)
@@ -1174,10 +1177,8 @@ class AutotuneWindow(QtWidgets.QWidget):
             self._restore_mechanical_settings_from_meta(mechanical)
         summary = []
         if isinstance(meta, dict):
-            mode = meta.get("mode")
             if mode:
                 summary.append(f"Mode: {mode}")
-                self._restore_mode_from_meta(mode)
             if "excitation" in meta:
                 ex = meta["excitation"] or {}
                 summary.append(
