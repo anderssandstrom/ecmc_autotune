@@ -666,6 +666,7 @@ class AutotuneWindow(QtWidgets.QWidget):
         self._set_tooltip(self.ex_points, "Number of logarithmically spaced excitation points.")
         self.ex_amp = self._line_edit("0.01")
         self._set_tooltip(self.ex_amp, "Command amplitude in SP units.")
+        self.ex_amp_label = QtWidgets.QLabel("Amplitude")
         self.ex_settle = self._line_edit("10")
         self._set_tooltip(self.ex_settle, "Cycles per frequency used to settle before logging.")
         self.ex_meas = self._line_edit("50")
@@ -680,7 +681,7 @@ class AutotuneWindow(QtWidgets.QWidget):
         left_form.addRow("f start [Hz]", self.ex_f_start)
         left_form.addRow("f stop [Hz]", self.ex_f_stop)
         left_form.addRow("Points", self.ex_points)
-        left_form.addRow("Amplitude", self.ex_amp)
+        left_form.addRow(self.ex_amp_label, self.ex_amp)
         right_form.addRow("Settle cycles", self.ex_settle)
         right_form.addRow("Measure cycles", self.ex_meas)
         right_form.addRow("Transition min [s]", self.ex_trans_min)
@@ -988,6 +989,7 @@ class AutotuneWindow(QtWidgets.QWidget):
         pos_enabled = resolved_key in position_modes
         for widget in getattr(self, "position_fields", []):
             widget.setEnabled(pos_enabled)
+        self._update_amp_label(config)
         self._update_flow_diagram(config.get("flow_steps"))
         self._update_docs_text(config)
 
@@ -1030,6 +1032,17 @@ class AutotuneWindow(QtWidgets.QWidget):
         source = text if text is not None else (self.ex_f_stop.text() if hasattr(self, "ex_f_stop") else "")
         source = "" if source is None else str(source)
         self.an_fmax.setText(source.strip())
+
+    def _update_amp_label(self, config):
+        if not hasattr(self, "ex_amp_label") or self.ex_amp_label is None:
+            return
+        unit = ""
+        time_cfg = (config or {}).get("time_plot", {}) if isinstance(config, dict) else {}
+        unit = time_cfg.get("command_units") or ""
+        label = "Amplitude"
+        if unit:
+            label = f"Amplitude [{unit}]"
+        self.ex_amp_label.setText(label)
 
     def _update_flow_diagram(self, steps):
         if not hasattr(self, "flow_steps_layout"):
