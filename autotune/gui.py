@@ -136,7 +136,7 @@ MODE_DEFINITIONS = {
         ],
     },
     "csv_position_bode": {
-        "label": "Closed position loop bode",
+        "label": "CSP closed loop bode",
         "description": "Closed-loop position bode plot using position demand and position feedback. Useful for verifying outer-loop dynamics without tuning.",
         "supports_mechanical": False,
         "flow_steps": DEFAULT_FLOW_STEPS,
@@ -1138,6 +1138,12 @@ class AutotuneWindow(QtWidgets.QWidget):
         settings = meta.get("pv_settings") if isinstance(meta, dict) else None
         if settings:
             self._restore_pv_settings_from_meta(settings)
+        excitation = meta.get("excitation") if isinstance(meta, dict) else None
+        if excitation:
+            self._restore_excitation_settings_from_meta(excitation)
+        mechanical = meta.get("mechanical") if isinstance(meta, dict) else None
+        if mechanical:
+            self._restore_mechanical_settings_from_meta(mechanical)
         summary = []
         if isinstance(meta, dict):
             mode = meta.get("mode")
@@ -1189,6 +1195,48 @@ class AutotuneWindow(QtWidgets.QWidget):
         text = "\n".join(lines)
         self.pv_extra.setPlainText(text)
         self._last_auto_values["extra_logs"] = text
+
+    def _restore_excitation_settings_from_meta(self, excitation):
+        if not isinstance(excitation, dict):
+            return
+
+        def set_line(widget, name, key):
+            if key not in excitation:
+                return
+            value = excitation.get(key)
+            widget.setText("" if value is None else str(value))
+            self._last_auto_values[name] = widget.text()
+
+        set_line(self.ex_fs, "fs", "fs")
+        set_line(self.ex_f_start, "f_start", "f_start")
+        set_line(self.ex_f_stop, "f_stop", "f_stop")
+        set_line(self.ex_points, "n_points", "n_points")
+        set_line(self.ex_amp, "amp", "amp")
+        set_line(self.ex_settle, "n_settle", "n_settle")
+        set_line(self.ex_meas, "n_meas", "n_meas")
+        set_line(self.ex_trans_min, "transition_min_s", "transition_min_s")
+        set_line(self.ex_trans_frac, "transition_frac", "transition_frac")
+        set_line(self.ex_taper, "edge_taper_cycles", "edge_taper_cycles")
+
+    def _restore_mechanical_settings_from_meta(self, mechanical):
+        if not isinstance(mechanical, dict):
+            return
+
+        def set_line(widget, name, key):
+            if key not in mechanical:
+                return
+            value = mechanical.get(key)
+            widget.setText("" if value is None else str(value))
+            self._last_auto_values[name] = widget.text()
+
+        set_line(self.pv_motor_torque, "motor_rated_trq", "motor_rated_trq")
+        set_line(self.pv_torque_scale, "torque_scale", "torque_scale")
+        set_line(self.pv_velocity_scale, "velocity_scale", "velocity_scale")
+        set_line(self.me_smooth, "smooth_hz", "smooth_hz")
+        set_line(self.me_deriv, "deriv_hz", "deriv_hz")
+        set_line(self.me_deadband, "vel_deadband", "vel_deadband")
+        set_line(self.pid_bw, "pi_bandwidth", "pi_bandwidth")
+        set_line(self.pid_zeta, "pi_zeta", "pi_zeta")
 
     def _collect_settings(self):
         pv_cfg = pipeline.PVSettings(
@@ -1325,6 +1373,9 @@ class AutotuneWindow(QtWidgets.QWidget):
         self.latest_result = result
         self._update_plots(result)
         self._report_result(result)
+        log_file = getattr(result, "log_file", None)
+        if log_file:
+            self.log_path_edit.setText(str(log_file))
         self.progress_bar.setValue(100)
         self.abort_btn.setEnabled(False)
 

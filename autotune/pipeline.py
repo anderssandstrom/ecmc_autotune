@@ -196,12 +196,14 @@ def run_measurement(
     progress_fn=None,
     should_abort=None,
     mode=DEFAULT_MODE,
+    log_only=False,
 ):
     mode = _normalize_mode(mode)
+    log_only = bool(log_only) or mode == "logger"
     pvs = pv.to_pv_map()
-    if "SP" not in pvs:
+    if not log_only and "SP" not in pvs:
         raise ValueError("SP PV must be defined")
-    if "ACT" not in pvs:
+    if not log_only and "ACT" not in pvs:
         raise ValueError("ACT PV must be defined for analysis")
     _log(log_fn, "Using PV map: %s" % ", ".join(f"{k}={v}" for k, v in sorted(pvs.items())))
 
@@ -285,15 +287,20 @@ def run_measurement(
         log_path = Path(log_filename)
         if log_path.suffix == "":
             log_path = log_path.with_suffix(".pkl")
-        if log_path.exists() or log_path.is_dir():
-            stamp = datetime.now().strftime("_%Y%m%d_%H%M%S")
-            log_path = log_path.with_name(log_path.stem + stamp + log_path.suffix)
+        prefix = _mode_prefix(mode)
+        stem = log_path.stem
+        suffix = log_path.suffix
+        if prefix and not stem.startswith(f"{prefix}_"):
+            stem = f"{prefix}_{stem}"
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_path = log_path.with_name(f"{stem}_{stamp}{suffix}")
         log_path.parent.mkdir(parents=True, exist_ok=True)
     meta = {
         "mode": mode,
         "pv_settings": _pv_settings_to_dict(pv),
         "excitation": _excitation_to_dict(excitation),
         "analysis": _analysis_to_dict(analysis),
+        "mechanical": _mechanical_to_dict(mechanical),
         "pid_targets": _pid_settings_to_dict(mechanical),
     }
     try:
@@ -607,6 +614,21 @@ def _analysis_to_dict(analysis):
     }
 
 
+def _mechanical_to_dict(mechanical):
+    if mechanical is None:
+        return {}
+    return {
+        "motor_rated_trq": mechanical.motor_rated_trq,
+        "torque_scale": mechanical.torque_scale,
+        "velocity_scale": mechanical.velocity_scale,
+        "smooth_hz": mechanical.smooth_hz,
+        "deriv_hz": mechanical.deriv_hz,
+        "vel_deadband": mechanical.vel_deadband,
+        "pi_bandwidth": mechanical.pi_bandwidth,
+        "pi_zeta": mechanical.pi_zeta,
+    }
+
+
 def _pid_settings_to_dict(mechanical):
     if mechanical is None:
         return {}
@@ -795,3 +817,16 @@ def _mode_supports_mechanical(mode):
     if not info:
         return False
     return bool(info.get("supports_mechanical"))
+
+
+def _mode_prefix(mode):
+    mode = _normalize_mode(mode)
+    mapping = {
+        "cst_velocity": "CST",
+        "csv_velocity_bode": "CSV",
+        "csv_position_bode": "CSP",
+        "csv_position_tune": "CSP_TUNE",
+        "generic": "GEN",
+        "logger": "LOG",
+    }
+    return mapping.get(mode, str(mode).upper() if mode else "")
