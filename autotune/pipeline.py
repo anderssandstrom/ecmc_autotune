@@ -19,6 +19,10 @@ VELOCITY_SCALE_TARGETS = {
     "csv_velocity_bode": {"SP", "SP_RBV", "ACT", "VEL_ACT"},
     "csv_position_tune": {"SP", "SP_RBV", "VEL_ACT"},
 }
+POSITION_SCALE_TARGETS = {
+    "csv_position_bode": {"SP", "SP_RBV", "ACT", "POS_ACT"},
+    "csv_position_tune": {"SP", "SP_RBV", "ACT", "POS_ACT"},
+}
 TORQUE_SCALE_TARGETS = {
     "cst_velocity": {"SP_RBV", "TRQ_ACT"},
 }
@@ -139,6 +143,7 @@ class MechanicalSettings(object):
         motor_rated_trq=0.5,
         torque_scale=None,
         velocity_scale=1.0,
+        position_scale=1.0,
         smooth_hz=150.0,
         deriv_hz=120.0,
         vel_deadband=1e-3,
@@ -148,6 +153,7 @@ class MechanicalSettings(object):
         self.motor_rated_trq = motor_rated_trq
         self.torque_scale = torque_scale
         self.velocity_scale = velocity_scale
+        self.position_scale = position_scale
         self.smooth_hz = smooth_hz
         self.deriv_hz = deriv_hz
         self.vel_deadband = vel_deadband
@@ -257,6 +263,8 @@ def run_measurement(
                 break
             if not log_only and sp_pv is not None:
                 cmd_val = float(value)
+                if abs(command_scale - 1.0) > 1e-12:
+                    cmd_val = cmd_val * command_scale
                 if mode == "cst_velocity" and abs(torque_scale - 1.0) > 1e-12:
                     cmd_val = cmd_val / torque_scale
                 sp_pv.put(cmd_val, wait=False)
@@ -466,6 +474,18 @@ def _analyze_with_fallback(t, vals_by_pv, fs, analysis, mechanical, log_path, mo
             else:
                 velocity_scale = None
     arrays = _apply_velocity_scale(arrays, velocity_scale, mode)
+    position_scale = getattr(mechanical, "position_scale", None) if mechanical else None
+    if position_scale is not None:
+        try:
+            position_value = float(position_scale)
+        except (TypeError, ValueError):
+            position_scale = None
+        else:
+            if not np.isfinite(position_value):
+                position_scale = None
+            else:
+                position_scale = position_value
+    arrays = _apply_position_scale(arrays, position_scale, mode)
     try:
         result = _analyze(
             t,
@@ -621,6 +641,7 @@ def _mechanical_to_dict(mechanical):
         "motor_rated_trq": mechanical.motor_rated_trq,
         "torque_scale": mechanical.torque_scale,
         "velocity_scale": mechanical.velocity_scale,
+        "position_scale": mechanical.position_scale,
         "smooth_hz": mechanical.smooth_hz,
         "deriv_hz": mechanical.deriv_hz,
         "vel_deadband": mechanical.vel_deadband,
@@ -699,13 +720,24 @@ def _position_pid_from_targets(bw, zeta):
 def _command_scale_factor(mode, mechanical):
     if mechanical is None:
         return 1.0
-    try:
-        scale = float(mechanical.velocity_scale)
-    except (TypeError, ValueError):
+    # Velocity commands: divide by velocity_scale to convert user units to drive units.
+    if mode in VELOCITY_COMMAND_MODES:
+        try:
+            scale = float(mechanical.velocity_scale)
+        except (TypeError, ValueError):
+            return 1.0
+        if np.isfinite(scale) and scale != 0.0:
+            return 1.0 / scale
         return 1.0
-    if not np.isfinite(scale) or scale == 0.0:
-        return 1.0
-    return scale if mode in VELOCITY_COMMAND_MODES else 1.0
+    # Position commands: divide by position_scale to convert user units to drive units.
+    if mode in {"csv_position_bode", "csv_position_tune"}:
+        try:
+            scale = float(getattr(mechanical, "position_scale", 1.0))
+        except (TypeError, ValueError):
+            return 1.0
+        if np.isfinite(scale) and scale != 0.0:
+            return 1.0 / scale
+    return 1.0
 
 
 def _apply_velocity_scale(vals_by_pv, scale, mode):
@@ -716,6 +748,25 @@ def _apply_velocity_scale(vals_by_pv, scale, mode):
     if not np.isfinite(scale) or abs(scale - 1.0) < 1e-12:
         return vals_by_pv
     targets = VELOCITY_SCALE_TARGETS.get(mode)
+    if not targets:
+        return vals_by_pv
+    scaled = {}
+    for key, values in vals_by_pv.items():
+        arr = np.asarray(values)
+        if key in targets:
+            arr = arr * scale
+        scaled[key] = arr
+    return scaled
+
+
+def _apply_position_scale(vals_by_pv, scale, mode):
+    try:
+        scale = float(scale)
+    except (TypeError, ValueError):
+        return vals_by_pv
+    if not np.isfinite(scale) or abs(scale - 1.0) < 1e-12:
+        return vals_by_pv
+    targets = POSITION_SCALE_TARGETS.get(mode)
     if not targets:
         return vals_by_pv
     scaled = {}

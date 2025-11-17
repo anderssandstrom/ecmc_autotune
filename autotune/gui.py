@@ -67,6 +67,7 @@ MODE_DEFINITIONS = {
             "motor_rated_trq": "1.0",
             "torque_scale": "",
             "velocity_scale": "1.0",
+            "position_scale": "1.0",
         },
         "pv_labels": {
             "prefix_p": "Prefix P",
@@ -113,6 +114,7 @@ MODE_DEFINITIONS = {
             "motor_rated_trq": "1.0",
             "torque_scale": "",
             "velocity_scale": "1.0",
+            "position_scale": "1.0",
         },
         "pv_labels": {
             "prefix_p": "Prefix P",
@@ -158,6 +160,7 @@ MODE_DEFINITIONS = {
             "motor_rated_trq": "1.0",
             "torque_scale": "",
             "velocity_scale": "1.0",
+            "position_scale": "1.0",
         },
         "pv_labels": {
             "prefix_p": "Prefix P",
@@ -207,6 +210,7 @@ MODE_DEFINITIONS = {
             "motor_rated_trq": "1.0",
             "torque_scale": "",
             "velocity_scale": "1.0",
+            "position_scale": "1.0",
         },
         "pv_labels": {
             "prefix_p": "Prefix P",
@@ -253,6 +257,7 @@ MODE_DEFINITIONS = {
             "motor_rated_trq": "1.0",
             "torque_scale": "",
             "velocity_scale": "1.0",
+            "position_scale": "1.0",
         },
         "pv_labels": {
             "prefix_p": "Prefix P",
@@ -588,6 +593,8 @@ class AutotuneWindow(QtWidgets.QWidget):
         self._set_tooltip(self.pv_torque_scale, "Manual Nm-per-command scaling; defaults to rated torque / 100.")
         self.pv_velocity_scale = self._line_edit("1.0")
         self._set_tooltip(self.pv_velocity_scale, "Scaling factor to convert velocity PV units to physical units.")
+        self.pv_position_scale = self._line_edit("1.0")
+        self._set_tooltip(self.pv_position_scale, "Scaling factor to convert position PV units; outputs are divided, inputs multiplied.")
         extra_group = QtWidgets.QGroupBox("Extra PV logging")
         form_right = QtWidgets.QVBoxLayout(extra_group)
         self.pv_extra = PVPlainTextEdit("")
@@ -606,12 +613,14 @@ class AutotuneWindow(QtWidgets.QWidget):
         form.addRow("Motor rated torque [Nm]", self.pv_motor_torque)
         form.addRow("Torque scale [Nm/unit]", self.pv_torque_scale)
         form.addRow("Velocity scale", self.pv_velocity_scale)
+        form.addRow("Position scale", self.pv_position_scale)
         layout.addWidget(form_group, 2)
         self.torque_fields = [
             self.pv_motor_torque,
             self.pv_torque_scale,
         ]
         self.velocity_fields = [self.pv_velocity_scale]
+        self.position_fields = [self.pv_position_scale]
         self._pv_fields = {
             "prefix_p": self.pv_prefix_p,
             "prefix_r": self.pv_prefix_r,
@@ -621,6 +630,7 @@ class AutotuneWindow(QtWidgets.QWidget):
             "motor_rated_trq": self.pv_motor_torque,
             "torque_scale": self.pv_torque_scale,
             "velocity_scale": self.pv_velocity_scale,
+            "position_scale": self.pv_position_scale,
         }
         suggestion_box = QtWidgets.QGroupBox("Available PVs")
         suggestion_layout = QtWidgets.QVBoxLayout(suggestion_box)
@@ -651,6 +661,7 @@ class AutotuneWindow(QtWidgets.QWidget):
         self._set_tooltip(self.ex_f_start, "Lowest stepped-sine frequency to command.")
         self.ex_f_stop = self._line_edit("400")
         self._set_tooltip(self.ex_f_stop, "Highest stepped-sine frequency to command.")
+        self.ex_f_stop.textChanged.connect(self._on_excitation_fstop_changed)
         self.ex_points = self._line_edit("20")
         self._set_tooltip(self.ex_points, "Number of logarithmically spaced excitation points.")
         self.ex_amp = self._line_edit("0.01")
@@ -699,6 +710,10 @@ class AutotuneWindow(QtWidgets.QWidget):
         self._set_tooltip(self.an_fmin, "Lower analysis frequency bound in Hz.")
         self.an_fmax = self._line_edit("500")
         self._set_tooltip(self.an_fmax, "Upper analysis frequency bound in Hz.")
+        self.sync_fmax_cb = QtWidgets.QCheckBox("Lock f max to f stop")
+        self.sync_fmax_cb.setChecked(True)
+        self._set_tooltip(self.sync_fmax_cb, "When enabled, analysis upper frequency follows the excitation f stop.")
+        self.sync_fmax_cb.toggled.connect(self._on_sync_fmax_toggled)
         self.an_freq_tol = self._line_edit("0.02")
         self._set_tooltip(self.an_freq_tol, "Allowed deviation between requested and detected stepped-sine frequencies.")
         self.an_settle = self._line_edit("0.3")
@@ -726,6 +741,8 @@ class AutotuneWindow(QtWidgets.QWidget):
             row_pos = row
             grid.addWidget(QtWidgets.QLabel(label), row_pos, col * 2)
             grid.addWidget(widget_field, row_pos, col * 2 + 1)
+        row_count = (len(labels) + cols - 1) // cols
+        grid.addWidget(self.sync_fmax_cb, row_count, 0, 1, 4)
         layout.addWidget(analysis_group, 2)
         self.mech_filter_group = QtWidgets.QGroupBox("Mechanical fitting filters")
         mech_form = QtWidgets.QFormLayout(self.mech_filter_group)
@@ -753,6 +770,7 @@ class AutotuneWindow(QtWidgets.QWidget):
         note.setWordWrap(True)
         target_layout.addWidget(note)
         layout.addWidget(target_group, 1)
+        self._on_sync_fmax_toggled(self.sync_fmax_cb.isChecked())
         return widget
 
     def _build_pid_tab(self):
@@ -966,6 +984,10 @@ class AutotuneWindow(QtWidgets.QWidget):
         vel_enabled = resolved_key in velocity_modes
         for widget in getattr(self, "velocity_fields", []):
             widget.setEnabled(vel_enabled)
+        position_modes = {"csv_position_bode", "csv_position_tune"}
+        pos_enabled = resolved_key in position_modes
+        for widget in getattr(self, "position_fields", []):
+            widget.setEnabled(pos_enabled)
         self._update_flow_diagram(config.get("flow_steps"))
         self._update_docs_text(config)
 
@@ -991,6 +1013,23 @@ class AutotuneWindow(QtWidgets.QWidget):
         if pv_name and pv_name not in label:
             label = f"{label} ({pv_name})" if label else pv_name
         return label or (pv_name or "Signal")
+
+    def _on_excitation_fstop_changed(self, text):
+        if getattr(self, "sync_fmax_cb", None) and self.sync_fmax_cb.isChecked():
+            self._sync_fmax_to_excitation(text)
+
+    def _on_sync_fmax_toggled(self, checked):
+        if hasattr(self, "an_fmax") and self.an_fmax:
+            self.an_fmax.setEnabled(not checked)
+        if checked:
+            self._sync_fmax_to_excitation()
+
+    def _sync_fmax_to_excitation(self, text=None):
+        if not hasattr(self, "an_fmax") or self.an_fmax is None:
+            return
+        source = text if text is not None else (self.ex_f_stop.text() if hasattr(self, "ex_f_stop") else "")
+        source = "" if source is None else str(source)
+        self.an_fmax.setText(source.strip())
 
     def _update_flow_diagram(self, steps):
         if not hasattr(self, "flow_steps_layout"):
@@ -1171,6 +1210,7 @@ class AutotuneWindow(QtWidgets.QWidget):
             mode = meta.get("mode")
             if mode:
                 summary.append(f"Mode: {mode}")
+                self._restore_mode_from_meta(mode)
             if "excitation" in meta:
                 ex = meta["excitation"] or {}
                 summary.append(
@@ -1190,6 +1230,15 @@ class AutotuneWindow(QtWidgets.QWidget):
             text = f"Loaded {Path(path).name}\n" + ("\n".join(summary) if summary else "")
             self.log_meta_label.setText(text.strip() or "No metadata available.")
         self._update_docs_tab()
+
+    def _restore_mode_from_meta(self, mode_key):
+        if not hasattr(self, "mode_combo") or self.mode_combo is None:
+            return
+        for idx in range(self.mode_combo.count()):
+            if self.mode_combo.itemData(idx) == mode_key:
+                self.mode_combo.setCurrentIndex(idx)
+                self._on_mode_changed(idx)
+                return
 
     def _restore_pv_settings_from_meta(self, settings):
         def set_line(widget, name, value):
@@ -1254,6 +1303,7 @@ class AutotuneWindow(QtWidgets.QWidget):
         set_line(self.pv_motor_torque, "motor_rated_trq", "motor_rated_trq")
         set_line(self.pv_torque_scale, "torque_scale", "torque_scale")
         set_line(self.pv_velocity_scale, "velocity_scale", "velocity_scale")
+        set_line(self.pv_position_scale, "position_scale", "position_scale")
         set_line(self.me_smooth, "smooth_hz", "smooth_hz")
         set_line(self.me_deriv, "deriv_hz", "deriv_hz")
         set_line(self.me_deadband, "vel_deadband", "vel_deadband")
@@ -1296,6 +1346,7 @@ class AutotuneWindow(QtWidgets.QWidget):
             motor_rated_trq=self._optional_float(self.pv_motor_torque) or 0.5,
             torque_scale=self._optional_float(self.pv_torque_scale),
             velocity_scale=self._optional_float(self.pv_velocity_scale) or 1.0,
+            position_scale=self._optional_float(self.pv_position_scale) or 1.0,
             smooth_hz=self._float(self.me_smooth, "Smooth cutoff"),
             deriv_hz=self._float(self.me_deriv, "Derivative cutoff"),
             vel_deadband=self._float(self.me_deadband, "Velocity deadband"),
