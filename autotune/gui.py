@@ -41,6 +41,15 @@ DEFAULT_FLOW_STEPS = [
     ("Analyze", "Compute Bode/plant fits from the log."),
     ("Suggest", "Derive PI/PID gains from analysis."),
 ]
+FLOW_STEP_DETAILS = {
+    "PV Setup": "Select PV prefixes and the SP/SP_RBV/ACT signals to command and log. Extra PVs are optional logs only.",
+    "Excitation": "Preview and approve the stepped-sine sequence (freq range, amplitude, settle/measure cycles, tapering).",
+    "Acquire": "Connect to PVs, restore initial setpoint, run the excitation while logging, and revert the setpoint afterward.",
+    "Analyze": "Resample logged data, compute bode magnitude/phase, fit the mechanical model when enabled, and derive PID gains.",
+    "Suggest": "Show gains/fit results; exportable bode/fit data and time traces are available for verification.",
+    "Log": "Start PV monitors and record the selected PVs continuously without writing commands.",
+    "Review": "Inspect logged signals, bode plots (where applicable), and export or reprocess the log.",
+}
 
 
 MODE_DEFINITIONS = {
@@ -468,6 +477,17 @@ class AutotuneWindow(QtWidgets.QWidget):
     def _build_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
 
+        self.measure_btn = QtWidgets.QPushButton("Run Measurement")
+        self.reanalyze_btn = QtWidgets.QPushButton("Reanalyze Log")
+        self.abort_btn = QtWidgets.QPushButton("Abort")
+        self.abort_btn.setEnabled(False)
+        self.measure_btn.clicked.connect(self._start_measurement)
+        self.reanalyze_btn.clicked.connect(self._start_reanalysis)
+        self.abort_btn.clicked.connect(self._abort_worker)
+        self._set_tooltip(self.measure_btn, "Excite the axis with the configured stepped-sine sequence and capture fresh data.")
+        self._set_tooltip(self.reanalyze_btn, "Process a previously recorded log with the current analysis settings.")
+        self._set_tooltip(self.abort_btn, "Stop the active measurement or analysis as soon as possible.")
+
         settings_widget = QtWidgets.QWidget()
         settings_widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Maximum)
         settings_widget.setMaximumHeight(420)
@@ -496,18 +516,7 @@ class AutotuneWindow(QtWidgets.QWidget):
         settings_layout.addWidget(self.tabs)
 
         button_row = QtWidgets.QHBoxLayout()
-        self.measure_btn = QtWidgets.QPushButton("Run Measurement")
-        self.reanalyze_btn = QtWidgets.QPushButton("Reanalyze Log")
-        self.measure_btn.clicked.connect(self._start_measurement)
-        self.reanalyze_btn.clicked.connect(self._start_reanalysis)
-        self._set_tooltip(self.measure_btn, "Excite the axis with the configured stepped-sine sequence and capture fresh data.")
-        self._set_tooltip(self.reanalyze_btn, "Process a previously recorded log with the current analysis settings.")
         button_row.addWidget(self.measure_btn)
-        button_row.addWidget(self.reanalyze_btn)
-        self.abort_btn = QtWidgets.QPushButton("Abort")
-        self.abort_btn.setEnabled(False)
-        self.abort_btn.clicked.connect(self._abort_worker)
-        self._set_tooltip(self.abort_btn, "Stop the active measurement or analysis as soon as possible.")
         button_row.addWidget(self.abort_btn)
         button_row.addStretch(1)
         settings_layout.addLayout(button_row)
@@ -820,6 +829,8 @@ class AutotuneWindow(QtWidgets.QWidget):
         self._set_tooltip(load_btn, "Pick an existing log to reanalyze and restore settings.")
         button_row.addWidget(save_btn)
         button_row.addWidget(load_btn)
+        if hasattr(self, "reanalyze_btn"):
+            button_row.addWidget(self.reanalyze_btn)
         button_row.addStretch(1)
         layout.addLayout(button_row)
         self.log_meta_label = QtWidgets.QLabel("No log loaded.")
@@ -997,6 +1008,11 @@ class AutotuneWindow(QtWidgets.QWidget):
             label = QtWidgets.QLabel(desc)
             label.setWordWrap(True)
             card_layout.addWidget(label)
+            detail = self._flow_step_detail(title, desc)
+            info_btn = QtWidgets.QPushButton("Details")
+            info_btn.setMaximumWidth(80)
+            info_btn.clicked.connect(lambda _, t=title, d=detail: self._show_flow_step_popup(t, d))
+            card_layout.addWidget(info_btn, alignment=QtCore.Qt.AlignRight)
             layout.addWidget(card, 1)
             if idx < len(steps) - 1:
                 arrow = QtWidgets.QLabel("→")
@@ -1004,6 +1020,12 @@ class AutotuneWindow(QtWidgets.QWidget):
                 arrow.setFixedWidth(24)
                 layout.addWidget(arrow)
         layout.addStretch(1)
+
+    def _flow_step_detail(self, title, fallback):
+        return FLOW_STEP_DETAILS.get(title, fallback or "No additional details provided.")
+
+    def _show_flow_step_popup(self, title, detail):
+        QtWidgets.QMessageBox.information(self, title, detail)
 
     def _update_docs_text(self, config):
         self._update_docs_tab()
@@ -1466,7 +1488,6 @@ class AutotuneWindow(QtWidgets.QWidget):
         extras = {
             name: np.asarray(values)
             for name, values in result.values_by_pv.items()
-            if name not in (result.command_key, result.response_key)
         }
         self.last_extra_series = extras
         self.derived_extra_series = self._build_derived_series(result)
